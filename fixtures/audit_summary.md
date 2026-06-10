@@ -1,49 +1,57 @@
 <!--
-  Representative `gh actions-importer audit` summary (SYNTHETIC).
-
-  This stands in for a real capture so the parser has a stable fixture to test
-  against. Replace it with a genuine audit_summary.md from a sample ADO org when
-  one is available (see issue: "Importer-output fixture harness"), and record the
-  Importer version it came from. Counts here are internally consistent on purpose.
+  Anonymized `gh actions-importer audit` summary, matching the REAL Importer
+  markdown format (bold counts with percentages, plain `Total:` lines, Build-steps
+  Known/Unknown/Actions buckets, `${{ secrets.X }}` manual tasks). Captured shape
+  from a live audit (org/pipeline names genericized; never any secret values).
 -->
 
-# Validation Summary
+# Audit summary
+
+Summary for Azure DevOps
+
+- GitHub Actions Importer version: **1.3.22645**
+- Performed at: **1/1/26 at 00:00**
 
 ## Pipelines
 
-- Total: 16
-- Successful: 9
-- Partially successful: 4
-- Unsupported: 2
-- Failed: 1
+Total: **3**
 
-## Build steps
+- Successful: **1 (33%)**
+- Partially successful: **1 (33%)**
+- Unsupported: **1 (33%)**
+- Failed: **0 (0%)**
 
-- Total: 120
-- Successful: 100
-- Unsupported: 15
+### Build steps
 
-## Unsupported build steps
+Total: **20**
 
-- DownloadSecureFile@1: 3
-- acme-corp.deploy.DeployTask@2: 7
-- Kubernetes@1: 5
+Known: **17 (85%)**
 
-# Manual tasks
+- script: **10**
+- checkout: **5**
+- AzureCLI@2: **2**
 
-## Secrets
+Unknown: **3 (15%)**
 
-- AZURE_CLIENT_SECRET
-- SONAR_TOKEN
-- REGISTRY_PASSWORD
+- Cache@2: **2**
+- TerraformInstaller@1: **1**
 
-## Self hosted runners
+Actions: **12**
 
-- linux-pool: 4
-- macos-pool: 1
+- run: **8**
+- actions/checkout@v4.1.0: **4**
 
-# Actions
+### Manual tasks
 
-- actions/checkout@v4: 16
-- actions/setup-node@v4: 8
-- azure/login@v2: 5
+Total: **2**
+
+Secrets: **2**
+
+- `${{ secrets.AZURE_CLIENT_SECRET }}`: **1**
+- `${{ secrets.REGISTRY_TOKEN }}`: **1**
+
+### Partially successful
+
+#### proj/pipeline-a
+
+- [pipelines/proj/pipeline-a/.github/workflows/pipeline-a.yml](pipelines/proj/pipeline-a/.github/workflows/pipeline-a.yml)
