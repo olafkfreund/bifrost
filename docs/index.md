@@ -6,7 +6,7 @@ description: "Bifrost — Azure DevOps → GitHub Actions migration at portfolio
 permalink: /
 ---
 
-# 🌈 Bifrost
+# ❄️ Bifrost
 {: .fs-9 }
 
 The bridge between worlds. Azure DevOps → GitHub Actions migration at **portfolio scale** —

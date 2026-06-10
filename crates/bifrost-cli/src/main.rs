@@ -40,7 +40,7 @@ async fn audit(project: &str) -> Result<()> {
     let connections = adapter.fetch_service_connections().await?;
     let groups = adapter.fetch_variable_groups().await?;
 
-    println!("🌈 Bifrost audit — project '{project}'\n");
+    println!("❄️ Bifrost audit — project '{project}'\n");
 
     println!("Projects ({}):", projects.len());
     for p in &projects {

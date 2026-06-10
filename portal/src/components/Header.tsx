@@ -1,6 +1,7 @@
 import type { PortfolioSummary } from '../types'
 import type { Theme } from '../lib/theme'
 import { ThemeToggle } from './ThemeToggle'
+import { Logo } from './Logo'
 
 export function Header({
   summary,
@@ -15,7 +16,7 @@ export function Header({
     <header className="border-b border-ink-800 bg-ink-900/60 backdrop-blur">
       <div className="mx-auto flex max-w-7xl items-center gap-4 px-6 py-4">
         <div className="flex items-center gap-3">
-          <span className="text-2xl leading-none">🌈</span>
+          <Logo className="h-7 w-7 text-brand-400" />
           <div className="leading-tight">
             <div className="font-semibold text-ink-100">Bifrost</div>
             <div className="text-xs text-ink-300">ADO → GitHub Actions migration</div>
