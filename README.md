@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🌈 Bifrost
+# ❄️ Bifrost
 
 **The bridge between worlds — Azure DevOps → GitHub Actions, at portfolio scale.**
 
