@@ -1,0 +1,142 @@
+//! Audit orchestration.
+//!
+//! Ties the read side together: enumerate pipelines via a [`SourceAdapter`],
+//! dry-run each via an [`Importer`], derive deterministic risk signals from the
+//! gaps, assess them, and aggregate into a [`Portfolio`]. Both collaborators are
+//! traits, so the whole flow runs and is tested against mocks (no ADO, no Docker).
+
+use bifrost_core::{
+    build_pipeline, signals_from_dry_run, GapKind, PipelineMeta, Portfolio, PortfolioSummary,
+    ProposalStatus,
+};
+
+use crate::importer::{Importer, ImporterError};
+use crate::source::{AdapterError, SourceAdapter};
+
+/// Provenance/config for an audit run, recorded on the portfolio summary.
+#[derive(Debug, Clone)]
+pub struct AuditConfig {
+    pub org: String,
+    pub importer_version: String,
+    pub ado2gh_version: String,
+    pub air_gap: bool,
+    /// Timestamp for the run (passed in — the core stays clock-free/deterministic).
+    pub generated_at: String,
+}
+
+/// Errors the orchestrator surfaces, wrapping its collaborators.
+#[derive(Debug, thiserror::Error)]
+pub enum OrchestrationError {
+    #[error(transparent)]
+    Adapter(#[from] AdapterError),
+    #[error(transparent)]
+    Importer(#[from] ImporterError),
+}
+
+/// Audit an org into a fully-computed [`Portfolio`].
+///
+/// For each pipeline: dry-run → [`signals_from_dry_run`] → [`build_pipeline`].
+/// Risk is computed by the deterministic engine; the LLM is not involved.
+///
+/// Runs sequentially for now; bounded-concurrency fan-out is a follow-up (#47).
+pub async fn audit_org(
+    adapter: &dyn SourceAdapter,
+    importer: &dyn Importer,
+    config: AuditConfig,
+) -> Result<Portfolio, OrchestrationError> {
+    let sources = adapter.enumerate_pipelines().await?;
+    let mut pipelines = Vec::with_capacity(sources.len());
+
+    for src in sources {
+        let dry_run = importer.dry_run(&src.id).await?;
+        let signals = signals_from_dry_run(&dry_run, src.classification);
+        let meta = PipelineMeta {
+            id: src.id,
+            name: src.name,
+            project: src.project,
+            status: ProposalStatus::NotStarted,
+            unsupported_steps: dry_run.gaps_of(GapKind::UnsupportedStep).count() as u32,
+            manual_tasks: dry_run.gaps_of(GapKind::ManualTask).count() as u32,
+            // Forecast comes from the Importer `forecast` command (not yet wrapped).
+            forecast_minutes: 0,
+        };
+        pipelines.push(build_pipeline(meta, &signals));
+    }
+
+    let totals = Portfolio::totals_from(&pipelines);
+    Ok(Portfolio {
+        summary: PortfolioSummary {
+            org: config.org,
+            importer_version: config.importer_version,
+            ado2gh_version: config.ado2gh_version,
+            air_gap: config.air_gap,
+            generated_at: config.generated_at,
+            totals,
+        },
+        pipelines,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::importer::MockImporter;
+    use crate::source::MockSourceAdapter;
+    use bifrost_core::{Classification, RiskBand};
+
+    fn config() -> AuditConfig {
+        AuditConfig {
+            org: "contoso".into(),
+            importer_version: "mock".into(),
+            ado2gh_version: "mock".into(),
+            air_gap: true,
+            generated_at: "2026-06-10T00:00:00Z".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn audits_org_into_a_computed_portfolio() {
+        let portfolio = audit_org(&MockSourceAdapter::new(), &MockImporter, config())
+            .await
+            .expect("audit succeeds");
+
+        // MockSourceAdapter has two pipelines: one YAML, one classic.
+        assert_eq!(portfolio.summary.totals.pipelines, 2);
+        assert_eq!(portfolio.summary.totals.yaml, 1);
+        assert_eq!(portfolio.summary.totals.classic, 1);
+        assert_eq!(portfolio.summary.org, "contoso");
+
+        // Every entry has a computed score and a factor breakdown.
+        for p in &portfolio.pipelines {
+            assert!(
+                p.risk_score > 0,
+                "shared dry-run produces gaps for every pipeline"
+            );
+            assert!(!p.factors.is_empty());
+        }
+
+        // The classic pipeline scores higher than the YAML one (same gaps + the
+        // classic weight), demonstrating per-pipeline computation.
+        let classic = portfolio
+            .pipelines
+            .iter()
+            .find(|p| p.classification == Classification::Classic)
+            .unwrap();
+        let yaml = portfolio
+            .pipelines
+            .iter()
+            .find(|p| p.classification == Classification::Yaml)
+            .unwrap();
+        assert!(classic.risk_score > yaml.risk_score);
+        assert_eq!(classic.risk_band, RiskBand::Red);
+    }
+
+    #[tokio::test]
+    async fn totals_are_consistent_with_entries() {
+        let portfolio = audit_org(&MockSourceAdapter::new(), &MockImporter, config())
+            .await
+            .unwrap();
+        let t = &portfolio.summary.totals;
+        assert_eq!(t.green + t.amber + t.red, t.pipelines);
+    }
+}
