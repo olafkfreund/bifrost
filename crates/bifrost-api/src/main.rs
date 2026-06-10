@@ -1,41 +1,116 @@
 //! Bifrost control-plane API server.
 //!
-//! A minimal axum skeleton. Today it serves a health probe and the portfolio
-//! view from sample data; the ADO adapter + Importer wrapper will replace the
-//! sample source without changing the route contract.
+//! Serves the portfolio the portal renders. The source is resolved once at
+//! startup (and on `POST /api/refresh`), in priority order:
+//!   1. live audit of `BIFROST_PROJECT` (ADO REST + Docker Importer), if creds present
+//!   2. a portfolio JSON file named by `BIFROST_PORTFOLIO`
+//!   3. the built-in sample
+//!
+//! Any failure falls back to the next source, so the server always starts.
 
 mod sample;
 
-use axum::{routing::get, Json, Router};
+use std::sync::Arc;
+
+use axum::extract::State;
+use axum::{
+    routing::{get, post},
+    Json, Router,
+};
+use bifrost_core::Portfolio;
 use serde_json::{json, Value};
+use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
+
+type Shared = Arc<RwLock<Portfolio>>;
 
 async fn health() -> Json<Value> {
     Json(json!({ "status": "ok", "service": "bifrost-api" }))
 }
 
-/// Serve a real portfolio from the JSON file named by `BIFROST_PORTFOLIO`
-/// (e.g. produced by `bifrost audit --json`), falling back to the sample.
-async fn portfolio() -> Json<bifrost_core::Portfolio> {
+async fn portfolio(State(state): State<Shared>) -> Json<Portfolio> {
+    Json(state.read().await.clone())
+}
+
+/// Re-resolve the portfolio (e.g. re-run the live audit) and update the cache.
+async fn refresh(State(state): State<Shared>) -> Json<Portfolio> {
+    let fresh = resolve_portfolio().await;
+    *state.write().await = fresh.clone();
+    Json(fresh)
+}
+
+fn app(state: Shared) -> Router {
+    Router::new()
+        .route("/api/health", get(health))
+        .route("/api/portfolio", get(portfolio))
+        .route("/api/refresh", post(refresh))
+        .layer(CorsLayer::permissive())
+        .layer(TraceLayer::new_for_http())
+        .with_state(state)
+}
+
+/// Resolve the portfolio source (see module docs). Never panics.
+async fn resolve_portfolio() -> Portfolio {
+    if let Ok(project) = std::env::var("BIFROST_PROJECT") {
+        match build_live(&project).await {
+            Ok(p) => {
+                tracing::info!("serving live audit of project '{project}'");
+                return p;
+            }
+            Err(e) => tracing::warn!("live audit of '{project}' failed: {e}; falling back"),
+        }
+    }
     if let Ok(path) = std::env::var("BIFROST_PORTFOLIO") {
         match std::fs::read_to_string(&path).map(|s| serde_json::from_str(&s)) {
-            Ok(Ok(p)) => return Json(p),
+            Ok(Ok(p)) => {
+                tracing::info!("serving portfolio from {path}");
+                return p;
+            }
             Ok(Err(e)) => tracing::warn!("BIFROST_PORTFOLIO parse error: {e}; using sample"),
             Err(e) => tracing::warn!("BIFROST_PORTFOLIO read error: {e}; using sample"),
         }
     }
-    Json(sample::portfolio())
+    tracing::info!("serving sample portfolio");
+    sample::portfolio()
 }
 
-fn app() -> Router {
-    Router::new()
-        .route("/api/health", get(health))
-        .route("/api/portfolio", get(portfolio))
-        // The portal dev server proxies /api, but allow direct cross-origin
-        // access too so the SPA can hit the API standalone.
-        .layer(CorsLayer::permissive())
-        .layer(TraceLayer::new_for_http())
+/// Run a live audit and assemble the portfolio.
+async fn build_live(project: &str) -> anyhow::Result<Portfolio> {
+    use bifrost_adapters::{
+        audit_portfolio, AuditConfig, AzureDevOpsAdapter, DockerImporter, Importer,
+    };
+    let adapter = AzureDevOpsAdapter::from_env(project)?;
+    let importer = DockerImporter::from_env(project)?;
+    let version = importer
+        .version()
+        .await
+        .unwrap_or_else(|_| "unknown".into());
+    let org = std::env::var("AZDO_ORG_URL").unwrap_or_default();
+    let config = AuditConfig {
+        org: org
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or("unknown")
+            .to_string(),
+        importer_version: version,
+        ado2gh_version: "n/a".into(),
+        air_gap: false,
+        generated_at: now_iso8601(),
+    };
+    Ok(audit_portfolio(&adapter, &importer, config).await?)
+}
+
+/// Current UTC timestamp via coreutils `date` (avoids a chrono dependency).
+fn now_iso8601() -> String {
+    std::process::Command::new("date")
+        .args(["-u", "+%Y-%m-%dT%H:%M:%SZ"])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "1970-01-01T00:00:00Z".into())
 }
 
 #[tokio::main]
@@ -47,10 +122,13 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    // Resolve the portfolio once at startup (a live audit may take a while).
+    let state: Shared = Arc::new(RwLock::new(resolve_portfolio().await));
+
     let addr = std::env::var("BIFROST_API_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("bifrost-api listening on http://{addr}");
 
-    axum::serve(listener, app()).await?;
+    axum::serve(listener, app(state)).await?;
     Ok(())
 }
