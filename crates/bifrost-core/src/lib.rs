@@ -6,3 +6,12 @@
 //!
 //! Risk scoring lives here and is computed from explainable factors — never
 //! from the LLM (see the implementation plan, §6).
+
+pub mod model;
+pub mod risk;
+
+pub use model::{
+    Classification, Pipeline, Portfolio, PortfolioSummary, PortfolioTotals, ProposalStatus,
+    RiskBand, RiskFactor,
+};
+pub use risk::band_for_score;
