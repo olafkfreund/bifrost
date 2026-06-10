@@ -163,6 +163,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "bifrost-adapters",
  "bifrost-core",
  "serde",
  "serde_json",

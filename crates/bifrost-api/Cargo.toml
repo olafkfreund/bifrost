@@ -10,6 +10,7 @@ authors.workspace = true
 
 [dependencies]
 bifrost-core = { workspace = true }
+bifrost-adapters = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
