@@ -1,0 +1,39 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/bifrost-core",
+    "crates/bifrost-adapters",
+    "crates/bifrost-llm",
+    "crates/bifrost-api",
+    "crates/bifrost-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT"
+repository = "https://github.com/olafkfreund/bifrost"
+authors = ["Olaf K. Freund <olaf@freundcloud.com>"]
+
+# Shared dependency versions, referenced by member crates via `workspace = true`.
+[workspace.dependencies]
+bifrost-core = { path = "crates/bifrost-core" }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+axum = "0.7"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+
+# Deny warnings workspace-wide so CI (clippy -D warnings) stays green by default.
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

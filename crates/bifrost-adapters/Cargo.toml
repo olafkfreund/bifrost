@@ -1,0 +1,20 @@
+[package]
+name = "bifrost-adapters"
+description = "Source adapter trait + Azure DevOps adapter, and the GitHub Actions Importer wrapper."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+bifrost-core = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true
