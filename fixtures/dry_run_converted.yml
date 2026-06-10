@@ -1,0 +1,14 @@
+# Representative GitHub Actions Importer baseline output (SYNTHETIC).
+# The converted workflow the Importer produces for a dry-run, before Bifrost
+# merges in any LLM gap-fills. Pairs with dry_run.log (same pipeline).
+name: SARC-main
+on:
+  push:
+    branches: [ main ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: echo "Importer-converted baseline step"

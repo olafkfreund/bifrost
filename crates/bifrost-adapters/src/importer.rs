@@ -247,6 +247,7 @@ pub struct MockImporter;
 
 const FIXTURE_AUDIT: &str = include_str!("../../../fixtures/audit_summary.md");
 const FIXTURE_DRY_RUN: &str = include_str!("../../../fixtures/dry_run.log");
+const FIXTURE_DRY_RUN_YAML: &str = include_str!("../../../fixtures/dry_run_converted.yml");
 
 #[async_trait]
 impl Importer for MockImporter {
@@ -261,6 +262,9 @@ impl Importer for MockImporter {
     async fn dry_run(&self, pipeline_id: &str) -> Result<DryRunResult, ImporterError> {
         let mut result = parse_dry_run(FIXTURE_DRY_RUN);
         result.pipeline_id = pipeline_id.to_string();
+        // The log fixture carries only gaps; pair it with the Importer's baseline
+        // workflow so the conversion loop has something to assemble against.
+        result.converted_yaml = FIXTURE_DRY_RUN_YAML.to_string();
         Ok(result)
     }
 }

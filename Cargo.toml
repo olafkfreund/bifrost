@@ -20,6 +20,7 @@ authors = ["Olaf K. Freund <olaf@freundcloud.com>"]
 [workspace.dependencies]
 bifrost-core = { path = "crates/bifrost-core" }
 bifrost-adapters = { path = "crates/bifrost-adapters" }
+bifrost-llm = { path = "crates/bifrost-llm" }
 async-trait = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }

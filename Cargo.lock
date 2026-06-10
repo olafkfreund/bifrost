@@ -151,6 +151,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bifrost-core",
+ "bifrost-llm",
  "reqwest",
  "serde_json",
  "thiserror",

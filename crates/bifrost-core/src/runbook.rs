@@ -99,18 +99,30 @@ impl Runbook {
     }
 }
 
+/// Whether a gap is human/manual work (claimed by the [`Runbook`]) rather than
+/// LLM gap-fill work. This is the single source of truth for the conversion
+/// loop's split: manual gaps become checklist items; everything else
+/// (first-party unsupported steps, partial constructs) is routed to the LLM.
+///
+/// Manual = any [`GapKind::ManualTask`], plus *namespaced* unsupported tasks
+/// (e.g. `acme.deploy.Task@2`) — custom/marketplace tasks a human must replace.
+pub fn gap_is_manual(gap: &Gap) -> bool {
+    matches!(gap.kind, GapKind::ManualTask)
+        || (gap.kind == GapKind::UnsupportedStep && gap.construct.contains('.'))
+}
+
 /// Map a single gap to a checklist item, or `None` if it is not manual work.
 fn item_for_gap(gap: &Gap) -> Option<ChecklistItem> {
+    if !gap_is_manual(gap) {
+        // First-party unsupported steps and partial constructs are the LLM's job
+        // (gap-fill), not a manual checklist item.
+        return None;
+    }
     let category = match gap.kind {
         GapKind::ManualTask => categorize_manual(&gap.construct, &gap.detail),
         // A namespaced task id is a custom/marketplace task — a human must find
-        // or author an equivalent action.
-        GapKind::UnsupportedStep if gap.construct.contains('.') => {
-            ChecklistCategory::ReplacementAction
-        }
-        // First-party unsupported steps and partial constructs are the LLM's job
-        // (gap-fill), not a manual checklist item.
-        _ => return None,
+        // or author an equivalent action (guaranteed namespaced by gap_is_manual).
+        _ => ChecklistCategory::ReplacementAction,
     };
     Some(ChecklistItem {
         category,
