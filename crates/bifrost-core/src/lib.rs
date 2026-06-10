@@ -15,6 +15,7 @@ pub mod ingestion;
 pub mod model;
 pub mod proposal;
 pub mod risk;
+pub mod runbook;
 
 pub use audit::{AuditCounts, AuditSummary, ManualTask, ManualTaskKind, UnsupportedStep};
 pub use audit_log::{AuditEvent, AuditLog};
@@ -30,3 +31,4 @@ pub use model::{
 };
 pub use proposal::{is_legal_transition, Proposal, ProposalError};
 pub use risk::{assess, band_for_score, RiskAssessment, RiskSignals};
+pub use runbook::{ChecklistCategory, ChecklistItem, Runbook};
