@@ -33,3 +33,7 @@ docs/vendor/
 result
 result-*
 .direnv/
+
+# Importer audit output (real conversion artifacts — never commit)
+/audit/
+report/
