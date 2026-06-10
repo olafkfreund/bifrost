@@ -28,3 +28,8 @@ docs/vendor/
 
 # Local secrets (direnv) — ADO PAT, GitHub token. NEVER commit.
 .envrc
+
+# Nix
+result
+result-*
+.direnv/
