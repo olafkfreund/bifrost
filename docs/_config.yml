@@ -1,0 +1,35 @@
+title: Bifrost
+description: >-
+  The bridge between worlds — Azure DevOps → GitHub Actions migration at
+  portfolio scale, semantically reviewed, human-approved, air-gap capable.
+remote_theme: just-the-docs/just-the-docs
+url: https://olafkfreund.github.io
+baseurl: /bifrost
+
+# just-the-docs settings
+color_scheme: dark
+search_enabled: true
+heading_anchors: true
+
+aux_links:
+  "GitHub":
+    - "https://github.com/olafkfreund/bifrost"
+aux_links_new_tab: true
+
+nav_external_links:
+  - title: View on GitHub
+    url: https://github.com/olafkfreund/bifrost
+
+footer_content: >-
+  Bifrost — MIT licensed. We wrap the official GitHub migration tools;
+  we never reimplement their conversion logic.
+
+plugins:
+  - jekyll-remote-theme
+  - jekyll-seo-tag
+
+# Exclude repo files that shouldn't be served
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - vendor
