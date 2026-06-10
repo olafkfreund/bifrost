@@ -21,4 +21,4 @@ pub use model::{
     Classification, Pipeline, Portfolio, PortfolioSummary, PortfolioTotals, ProposalStatus,
     RiskBand, RiskFactor,
 };
-pub use risk::band_for_score;
+pub use risk::{assess, band_for_score, RiskAssessment, RiskSignals};

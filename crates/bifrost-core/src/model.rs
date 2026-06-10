@@ -37,7 +37,7 @@ pub enum ProposalStatus {
 }
 
 /// A single migration-risk factor and its weighted contribution to the score.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RiskFactor {
     pub key: String,
     pub label: String,
