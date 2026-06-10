@@ -106,8 +106,8 @@ export default function App() {
       </main>
 
       <footer className="border-t border-ink-800 px-6 py-3 text-center text-xs text-ink-500">
-        Mock data — wired to the Rust control plane in M1/M2. Bifrost wraps the official GitHub
-        migration tools; it never reimplements their conversion logic.
+        Risk is computed deterministically from the Importer audit + source inventory. Bifrost
+        wraps the official GitHub migration tools; it never reimplements their conversion logic.
       </footer>
 
       <PipelineDrawer pipeline={selected} onClose={() => setSelected(null)} />

@@ -180,6 +180,7 @@ dependencies = [
  "bifrost-adapters",
  "bifrost-core",
  "clap",
+ "serde_json",
  "tokio",
 ]
 

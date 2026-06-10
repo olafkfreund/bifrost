@@ -7,7 +7,7 @@
 
 use bifrost_core::{
     build_pipeline, signals_from_dry_run, GapKind, PipelineMeta, Portfolio, PortfolioSummary,
-    ProposalStatus,
+    ProposalStatus, RiskSignals,
 };
 
 use crate::importer::{Importer, ImporterError};
@@ -58,6 +58,69 @@ pub async fn audit_org(
             unsupported_steps: dry_run.gaps_of(GapKind::UnsupportedStep).count() as u32,
             manual_tasks: dry_run.gaps_of(GapKind::ManualTask).count() as u32,
             // Forecast comes from the Importer `forecast` command (not yet wrapped).
+            forecast_minutes: 0,
+        };
+        pipelines.push(build_pipeline(meta, &signals));
+    }
+
+    let totals = Portfolio::totals_from(&pipelines);
+    Ok(Portfolio {
+        summary: PortfolioSummary {
+            org: config.org,
+            importer_version: config.importer_version,
+            ado2gh_version: config.ado2gh_version,
+            air_gap: config.air_gap,
+            generated_at: config.generated_at,
+            totals,
+        },
+        pipelines,
+    })
+}
+
+/// Build a [`Portfolio`] from a single org **audit** plus the adapter inventory —
+/// the path used when per-pipeline dry-runs aren't available (e.g. the Docker
+/// importer). The audit's build-step ratio + the org's connections/secrets are
+/// attributed to each pipeline; this is exact for single-pipeline orgs and an
+/// approximation otherwise (per-pipeline precision needs dry-runs / #31).
+pub async fn audit_portfolio(
+    adapter: &dyn SourceAdapter,
+    importer: &dyn Importer,
+    config: AuditConfig,
+) -> Result<Portfolio, OrchestrationError> {
+    let sources = adapter.enumerate_pipelines().await?;
+    let audit = importer.audit().await?;
+    let connections = adapter.fetch_service_connections().await?;
+    let groups = adapter.fetch_variable_groups().await?;
+
+    let secret_vars = groups
+        .iter()
+        .flat_map(|g| &g.variables)
+        .filter(|v| v.is_secret)
+        .count() as u32;
+    let converted_ratio = if audit.build_steps.total > 0 {
+        audit.build_steps.successful as f64 / audit.build_steps.total as f64
+    } else {
+        1.0
+    };
+
+    let mut pipelines = Vec::with_capacity(sources.len());
+    for src in sources {
+        let signals = RiskSignals {
+            classification: src.classification,
+            converted_ratio,
+            secrets: secret_vars,
+            variable_groups: groups.len() as u32,
+            service_connections: connections.len() as u32,
+            custom_or_marketplace_tasks: audit.unsupported_steps.len() as u32,
+            ..Default::default()
+        };
+        let meta = PipelineMeta {
+            id: src.id,
+            name: src.name,
+            project: src.project,
+            status: ProposalStatus::NotStarted,
+            unsupported_steps: audit.build_steps.unsupported,
+            manual_tasks: audit.manual_tasks.len() as u32,
             forecast_minutes: 0,
         };
         pipelines.push(build_pipeline(meta, &signals));

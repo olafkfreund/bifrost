@@ -5,11 +5,13 @@
 //! official tools; we never reimplement their conversion logic.
 
 pub mod azure_devops;
+pub mod docker_importer;
 pub mod importer;
 pub mod orchestrator;
 pub mod source;
 
 pub use azure_devops::AzureDevOpsAdapter;
+pub use docker_importer::DockerImporter;
 pub use importer::{parse_audit_summary, parse_dry_run, Importer, ImporterError, MockImporter};
-pub use orchestrator::{audit_org, AuditConfig, OrchestrationError};
+pub use orchestrator::{audit_org, audit_portfolio, AuditConfig, OrchestrationError};
 pub use source::{AdapterError, MockSourceAdapter, SourceAdapter};

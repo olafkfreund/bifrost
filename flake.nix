@@ -40,8 +40,9 @@
             # Portal
             nodejs_22
 
-            # Migration tooling: the official Importer is a gh extension + Docker
-            # image (not in nixpkgs); these provide the host side.
+            # Migration tooling: the official Importer runs as a Docker image
+            # (ghcr.io/actions-importer/cli) — driven directly, not via the gh
+            # extension (whose install dir is read-only under home-manager).
             gh
             azure-cli
             docker-client
@@ -59,17 +60,17 @@
 
           # rustls everywhere — keep the shell free of native TLS/OpenSSL deps.
           shellHook = ''
-            echo "🌈  Bifrost dev shell"
+            echo "❄️  Bifrost dev shell"
             echo "    rust : $(rustc --version 2>/dev/null)"
             echo "    node : $(node --version 2>/dev/null)"
             echo "    gh   : $(gh --version 2>/dev/null | head -1)"
             echo ""
             echo "    Secrets: tokens live in .envrc (gitignored). Run: source .envrc"
-            if ! gh extension list 2>/dev/null | grep -q actions-importer; then
+            if ! docker image inspect ghcr.io/actions-importer/cli:latest >/dev/null 2>&1; then
               echo ""
-              echo "    ⚠️  gh-actions-importer not installed. Install it once (writable \$HOME):"
-              echo "        gh extension install github/gh-actions-importer"
-              echo "        gh actions-importer configure   # uses GITHUB_TOKEN + AZDO_PAT"
+              echo "    ℹ️  Importer image not pulled yet. Bifrost drives it via Docker:"
+              echo "        docker pull ghcr.io/actions-importer/cli:latest"
+              echo "    (No gh extension needed — that dir is read-only under home-manager.)"
             fi
           '';
         };
