@@ -1,0 +1,15 @@
+[package]
+name = "bifrost-api"
+description = "Bifrost control-plane API (axum) — orgs, audits, pipelines, proposals, and SSE."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+bifrost-core = { workspace = true }
+
+[lints]
+workspace = true
