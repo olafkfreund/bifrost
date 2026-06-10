@@ -8,11 +8,13 @@
 //! from the LLM (see the implementation plan, §6).
 
 pub mod audit;
+pub mod conversion;
 pub mod ingestion;
 pub mod model;
 pub mod risk;
 
 pub use audit::{AuditCounts, AuditSummary, ManualTask, ManualTaskKind, UnsupportedStep};
+pub use conversion::{build_pipeline, PipelineMeta};
 pub use ingestion::{
     PipelineDefinition, Project, ServiceConnection, SourcePipeline, TaskKind, TaskUsage,
     VariableGroup, VariableRef,
