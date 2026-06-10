@@ -33,4 +33,4 @@ pub use model::{
 };
 pub use proposal::{is_legal_transition, Proposal, ProposalError};
 pub use risk::{assess, band_for_score, RiskAssessment, RiskSignals};
-pub use runbook::{ChecklistCategory, ChecklistItem, Runbook};
+pub use runbook::{gap_is_manual, ChecklistCategory, ChecklistItem, Runbook};

@@ -10,6 +10,7 @@ authors.workspace = true
 
 [dependencies]
 bifrost-core = { workspace = true }
+bifrost-llm = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 reqwest = { workspace = true }
