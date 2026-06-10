@@ -1,0 +1,10 @@
+{
+  "id": 10,
+  "name": "SARC-main",
+  "project": { "name": "SARC" },
+  "repository": { "name": "SARC", "type": "TfsGit" },
+  "process": {
+    "type": 2,
+    "yamlFilename": "/azure-pipelines.yml"
+  }
+}
