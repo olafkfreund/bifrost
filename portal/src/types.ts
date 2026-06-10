@@ -70,3 +70,50 @@ export interface Portfolio {
   summary: PortfolioSummary
   pipelines: Pipeline[]
 }
+
+/** A category of manual follow-up in the runbook (mirrors bifrost-core). */
+export type ChecklistCategory =
+  | 'secret'
+  | 'service_connection'
+  | 'variable_group'
+  | 'self_hosted_runner'
+  | 'environment'
+  | 'replacement_action'
+  | 'other'
+
+/** One actionable item the Importer cannot do for you. */
+export interface ChecklistItem {
+  category: ChecklistCategory
+  title: string
+  construct: string
+  detail: string
+}
+
+/** The per-pipeline manual-task checklist. */
+export interface Runbook {
+  items: ChecklistItem[]
+}
+
+/**
+ * An augmented workflow awaiting review. `riskBand`/`riskScore` are computed
+ * deterministically; `rationale`/`riskFlags`/`confidence` are the model's.
+ */
+export interface Proposal {
+  id: string
+  pipelineId: string
+  proposedYaml: string
+  rationale: string
+  riskFlags: string[]
+  verifySteps: string[]
+  riskBand: RiskBand
+  riskScore: number
+  promptId: string
+  confidence: number
+  status: ProposalStatus
+}
+
+/** The conversion-loop output the `/convert` endpoint returns. */
+export interface ConversionResult {
+  proposal: Proposal
+  runbook: Runbook
+}

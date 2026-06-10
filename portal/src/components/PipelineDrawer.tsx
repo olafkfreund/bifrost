@@ -11,7 +11,15 @@ function Stat({ label, value }: { label: string; value: React.ReactNode }) {
   )
 }
 
-export function PipelineDrawer({ pipeline, onClose }: { pipeline: Pipeline | null; onClose: () => void }) {
+export function PipelineDrawer({
+  pipeline,
+  onClose,
+  onOpenProposal,
+}: {
+  pipeline: Pipeline | null
+  onClose: () => void
+  onOpenProposal: (pipeline: Pipeline) => void
+}) {
   if (!pipeline) return null
   const p = pipeline
   const maxContribution = Math.max(...p.factors.map((f) => f.contribution), 1)
@@ -80,11 +88,10 @@ export function PipelineDrawer({ pipeline, onClose }: { pipeline: Pipeline | nul
 
         <div className="border-t border-ink-800 p-4">
           <button
-            disabled
-            title="Conversion + review lands in M2/M3"
-            className="w-full cursor-not-allowed rounded-lg border border-ink-700 bg-ink-850 px-4 py-2 text-sm font-medium text-ink-300"
+            onClick={() => onOpenProposal(p)}
+            className="w-full rounded-lg border border-ink-700 bg-ink-800 px-4 py-2 text-sm font-medium text-ink-100 transition hover:bg-ink-700"
           >
-            Open proposal · coming in M3
+            Open proposal →
           </button>
         </div>
       </aside>
