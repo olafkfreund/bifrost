@@ -25,3 +25,6 @@ docs/vendor/
 .idea/
 .vscode/
 *.swp
+
+# Local secrets (direnv) — ADO PAT, GitHub token. NEVER commit.
+.envrc
