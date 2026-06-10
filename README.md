@@ -72,15 +72,27 @@ rendered on the [docs site](https://olafkfreund.github.io/bifrost/).
 
 ## Getting started (contributors)
 
-This repo is **pre-implementation**. Work is issue-driven and milestone-ordered:
+On NixOS (or any machine with Nix + flakes), the dev shell provides the whole
+toolchain — the pinned Rust toolchain, Node 22, `gh`, `azure-cli`, and the Docker
+client:
 
 ```bash
-gh auth login                 # authenticate the GitHub CLI
-./seed-issues.sh              # bootstrap milestones, labels, epics, issues (run ONCE)
+nix develop                   # enter the Bifrost dev shell (honours rust-toolchain.toml)
+cargo test --workspace        # 27 tests green
+cd portal && npm ci && npm run dev   # portal (mock data) at http://localhost:5173
 ```
 
-Then pick up the first M0 issue ("Scaffold Cargo workspace") and work one epic at a time.
-See [`CLAUDE.md`](CLAUDE.md) for the full contributor workflow and hard rules.
+The GitHub Actions Importer isn't in nixpkgs (it's a `gh` extension + Docker
+image); install it once into your writable home:
+
+```bash
+gh extension install github/gh-actions-importer
+gh actions-importer configure   # uses GITHUB_TOKEN + AZDO_PAT
+```
+
+Tokens (ADO PAT, GitHub token) live in a gitignored `.envrc` — `source .envrc`.
+Work is issue-driven and milestone-ordered; see [`CLAUDE.md`](CLAUDE.md) for the
+full contributor workflow and hard rules.
 
 ## Stack (target)
 
