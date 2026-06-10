@@ -207,6 +207,7 @@ mod tests {
                     "pre-deploy approval gate",
                 ),
             ],
+            converted_yaml: String::new(),
         }
     }
 
@@ -241,6 +242,7 @@ mod tests {
             pipeline_id: "x".into(),
             converted_ratio: 1.0,
             gaps: vec![],
+            converted_yaml: String::new(),
         };
         let p = pipeline_from_dry_run(meta(), Classification::Yaml, &clean);
         assert_eq!(p.risk_band, crate::RiskBand::Green);
