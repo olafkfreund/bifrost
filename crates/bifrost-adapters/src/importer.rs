@@ -1,11 +1,16 @@
 //! Wrapper around the official `gh actions-importer`.
 //!
-//! For now this provides [`parse_audit_summary`], which turns the Importer's
-//! `audit_summary.md` into the typed [`AuditSummary`]. The Docker subprocess
-//! driver that produces that file lands behind the same module later — we wrap
-//! the official tool and parse its output; we never reimplement it.
+//! Provides parsers for the Importer's `audit_summary.md` ([`parse_audit_summary`])
+//! and per-pipeline dry-run logs ([`parse_dry_run`]), plus the [`Importer`] trait
+//! and a fixture-backed [`MockImporter`]. The Docker subprocess driver that
+//! produces these outputs lands behind the same trait later — we wrap the
+//! official tool and parse its output; we never reimplement it.
 
-use bifrost_core::{AuditCounts, AuditSummary, ManualTask, ManualTaskKind, UnsupportedStep};
+use async_trait::async_trait;
+use bifrost_core::{
+    AuditCounts, AuditSummary, DryRunResult, Gap, GapKind, ManualTask, ManualTaskKind,
+    UnsupportedStep,
+};
 
 /// Strip a leading markdown bullet (`- ` / `* `) if present.
 fn bullet(line: &str) -> Option<&str> {
@@ -99,6 +104,120 @@ pub fn parse_audit_summary(md: &str) -> AuditSummary {
     summary
 }
 
+/// Map a dry-run section header to the gap kind its bullets represent.
+fn gap_kind_for(section: &str) -> Option<GapKind> {
+    match section {
+        "unsupported steps" => Some(GapKind::UnsupportedStep),
+        "partial constructs" => Some(GapKind::PartialConstruct),
+        "manual tasks" => Some(GapKind::ManualTask),
+        _ => None,
+    }
+}
+
+/// Parse a `gh actions-importer dry-run` log into a typed [`DryRunResult`].
+///
+/// Extracts the pipeline id, the converted ratio from "Converted N of M steps",
+/// and the gaps grouped under their section headers. Tolerant of unknown lines.
+pub fn parse_dry_run(log: &str) -> DryRunResult {
+    let mut pipeline_id = String::new();
+    let mut converted_ratio = 1.0;
+    let mut gaps = Vec::new();
+    let mut kind: Option<GapKind> = None;
+
+    for raw in log.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix("Converting pipeline ") {
+            pipeline_id = rest
+                .trim_matches(|c| c == '\'' || c == '.' || c == ' ')
+                .to_string();
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("Converted ") {
+            // "12 of 14 steps."
+            let nums: Vec<f64> = rest
+                .split_whitespace()
+                .filter_map(|t| t.parse().ok())
+                .collect();
+            if let [n, m, ..] = nums[..] {
+                if m > 0.0 {
+                    converted_ratio = n / m;
+                }
+            }
+            continue;
+        }
+        if let Some(header) = line.strip_suffix(':') {
+            kind = gap_kind_for(&header.to_ascii_lowercase());
+            continue;
+        }
+        if let (Some(k), Some(item)) = (kind, line.strip_prefix("- ")) {
+            let (construct, detail) = item
+                .split_once(':')
+                .map(|(c, d)| (c.trim(), d.trim()))
+                .unwrap_or((item.trim(), ""));
+            gaps.push(Gap {
+                kind: k,
+                construct: construct.into(),
+                detail: detail.into(),
+            });
+        }
+    }
+
+    DryRunResult {
+        pipeline_id,
+        converted_ratio,
+        gaps,
+    }
+}
+
+/// Errors the Importer wrapper can surface.
+#[derive(Debug, thiserror::Error)]
+pub enum ImporterError {
+    #[error("importer subprocess failed: {0}")]
+    Subprocess(String),
+    #[error("could not parse importer output: {0}")]
+    Parse(String),
+}
+
+/// The official `gh actions-importer`, wrapped behind a trait so orchestration
+/// can be tested without Docker. The real driver shells out to the pinned image.
+#[async_trait]
+pub trait Importer: Send + Sync {
+    /// The Importer version/digest in use (recorded per job for attestation).
+    async fn version(&self) -> Result<String, ImporterError>;
+    /// Audit the org and return the parsed footprint.
+    async fn audit(&self) -> Result<AuditSummary, ImporterError>;
+    /// Dry-run a single pipeline and return its converted ratio + gaps.
+    async fn dry_run(&self, pipeline_id: &str) -> Result<DryRunResult, ImporterError>;
+}
+
+/// A fixture-backed [`Importer`] for tests and offline runs.
+#[derive(Debug, Clone, Default)]
+pub struct MockImporter;
+
+const FIXTURE_AUDIT: &str = include_str!("../../../fixtures/audit_summary.md");
+const FIXTURE_DRY_RUN: &str = include_str!("../../../fixtures/dry_run.log");
+
+#[async_trait]
+impl Importer for MockImporter {
+    async fn version(&self) -> Result<String, ImporterError> {
+        Ok("mock-importer".into())
+    }
+
+    async fn audit(&self) -> Result<AuditSummary, ImporterError> {
+        Ok(parse_audit_summary(FIXTURE_AUDIT))
+    }
+
+    async fn dry_run(&self, pipeline_id: &str) -> Result<DryRunResult, ImporterError> {
+        let mut result = parse_dry_run(FIXTURE_DRY_RUN);
+        result.pipeline_id = pipeline_id.to_string();
+        Ok(result)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,5 +292,39 @@ mod tests {
         let a = parse_audit_summary(md);
         assert_eq!(a.pipelines.total, 3);
         assert!(a.actions.is_empty());
+    }
+
+    const DRY_RUN: &str = include_str!("../../../fixtures/dry_run.log");
+
+    #[test]
+    fn dry_run_extracts_id_and_converted_ratio() {
+        let r = parse_dry_run(DRY_RUN);
+        assert_eq!(r.pipeline_id, "web-portal-release");
+        assert!((r.converted_ratio - 12.0 / 14.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn dry_run_groups_gaps_by_kind() {
+        let r = parse_dry_run(DRY_RUN);
+        assert_eq!(r.gaps_of(GapKind::UnsupportedStep).count(), 2);
+        assert_eq!(r.gaps_of(GapKind::PartialConstruct).count(), 1);
+        assert_eq!(r.gaps_of(GapKind::ManualTask).count(), 3);
+
+        let secret = r
+            .gaps_of(GapKind::ManualTask)
+            .find(|g| g.construct == "secret")
+            .expect("secret manual task");
+        assert!(secret.detail.contains("AZURE_CLIENT_SECRET"));
+    }
+
+    #[tokio::test]
+    async fn mock_importer_audits_and_dry_runs() {
+        let imp = MockImporter;
+        assert_eq!(imp.version().await.unwrap(), "mock-importer");
+        assert_eq!(imp.audit().await.unwrap().pipelines.total, 16);
+
+        let r = imp.dry_run("payments-api-deploy").await.unwrap();
+        assert_eq!(r.pipeline_id, "payments-api-deploy"); // id overridden to request
+        assert!(!r.gaps.is_empty());
     }
 }
