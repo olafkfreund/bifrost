@@ -61,11 +61,13 @@ ensure_milestone "M6 - Compliance + Deploy" "Attestation export, auth, multi-ten
 # ---------------------------------------------------------------------------
 mk() {
   local ms="$1" labels="$2" title="$3" body="$4"
+  # gh expects comma-separated labels in a single --label flag; the table above
+  # uses ';' as the separator, so translate before handing it to gh.
   gh issue create "${REPO_FLAG[@]}" \
     --title "$title" \
     --body  "$body" \
     --milestone "$ms" \
-    --label "$labels" >/dev/null
+    --label "${labels//;/,}" >/dev/null
   printf '  + %s\n' "$title"
 }
 
