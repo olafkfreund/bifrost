@@ -136,15 +136,96 @@ fn extract_json_object(s: &str) -> Option<&str> {
     None
 }
 
+/// What kind of work a gap-fill represents — drives provider selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskClass {
+    /// High-volume, mechanical fills — prefer a cheap/local provider.
+    Bulk,
+    /// Hard semantic reasoning — prefer a frontier provider.
+    HardReasoning,
+    /// Documentation / rationale prose — prefer a frontier provider.
+    Documentation,
+}
+
+/// Config-driven routing: an ordered provider-name preference per task class.
+/// The first preference that is *usable* (present, and local when air-gap) wins.
+#[derive(Debug, Clone)]
+pub struct RoutingPolicy {
+    /// Preference order for [`TaskClass::Bulk`].
+    pub bulk: Vec<String>,
+    /// Preference order for [`TaskClass::HardReasoning`].
+    pub hard: Vec<String>,
+    /// Preference order for [`TaskClass::Documentation`].
+    pub docs: Vec<String>,
+}
+
+impl Default for RoutingPolicy {
+    /// Bulk leans local-first (cheap); reasoning and docs lean frontier-first.
+    /// Every list ends with the other provider so a single-provider deployment
+    /// (or air-gap, which strips frontier) still resolves.
+    fn default() -> Self {
+        Self {
+            bulk: vec!["ollama".into(), "anthropic".into()],
+            hard: vec!["anthropic".into(), "ollama".into()],
+            docs: vec!["anthropic".into(), "ollama".into()],
+        }
+    }
+}
+
+impl RoutingPolicy {
+    /// Build from env: `BIFROST_ROUTE_BULK`, `BIFROST_ROUTE_HARD`,
+    /// `BIFROST_ROUTE_DOCS` as comma-separated provider names; each falls back
+    /// to the [`Default`] order when unset or empty.
+    pub fn from_env() -> Self {
+        let d = Self::default();
+        Self {
+            bulk: parse_names("BIFROST_ROUTE_BULK").unwrap_or(d.bulk),
+            hard: parse_names("BIFROST_ROUTE_HARD").unwrap_or(d.hard),
+            docs: parse_names("BIFROST_ROUTE_DOCS").unwrap_or(d.docs),
+        }
+    }
+
+    fn preferences(&self, class: TaskClass) -> &[String] {
+        match class {
+            TaskClass::Bulk => &self.bulk,
+            TaskClass::HardReasoning => &self.hard,
+            TaskClass::Documentation => &self.docs,
+        }
+    }
+}
+
+/// Parse a comma-separated provider-name list from `var`; `None` if unset/empty.
+fn parse_names(var: &str) -> Option<Vec<String>> {
+    let raw = std::env::var(var).ok()?;
+    let names: Vec<String> = raw
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+    (!names.is_empty()).then_some(names)
+}
+
 /// Selects a provider, enforcing air-gap policy.
 pub struct Router<'a> {
     providers: Vec<&'a dyn LlmProvider>,
     air_gap: bool,
+    policy: RoutingPolicy,
 }
 
 impl<'a> Router<'a> {
     pub fn new(providers: Vec<&'a dyn LlmProvider>, air_gap: bool) -> Self {
-        Self { providers, air_gap }
+        Self {
+            providers,
+            air_gap,
+            policy: RoutingPolicy::default(),
+        }
+    }
+
+    /// Override the default routing policy (e.g. one built from env/config).
+    pub fn with_policy(mut self, policy: RoutingPolicy) -> Self {
+        self.policy = policy;
+        self
     }
 
     /// Pick a provider by name, rejecting non-local providers in air-gap mode.
@@ -159,6 +240,32 @@ impl<'a> Router<'a> {
             return Err(LlmError::AirGapBlocked(name.to_string()));
         }
         Ok(p)
+    }
+
+    /// Route by task class: walk the policy's preference list and return the
+    /// first provider that is present and permitted under air-gap.
+    ///
+    /// In air-gap mode non-local providers are silently skipped, so the returned
+    /// provider is **always local** — a frontier never receives pipeline data
+    /// and no external call is ever made through the router.
+    pub fn route(&self, class: TaskClass) -> Result<&'a dyn LlmProvider, LlmError> {
+        for name in self.policy.preferences(class) {
+            if let Some(p) = self.providers.iter().copied().find(|p| p.name() == name) {
+                if self.air_gap && !p.is_local() {
+                    continue; // frontier provider — never used in air-gap mode
+                }
+                return Ok(p);
+            }
+        }
+        if self.air_gap {
+            Err(LlmError::AirGapBlocked(format!(
+                "no local provider available for {class:?}"
+            )))
+        } else {
+            Err(LlmError::Transport(format!(
+                "no provider available for {class:?}"
+            )))
+        }
     }
 }
 
@@ -277,6 +384,115 @@ mod tests {
         assert!(
             matches!(router.select("frontier"), Err(LlmError::AirGapBlocked(_))),
             "frontier blocked in air-gap"
+        );
+    }
+
+    /// A named test double with explicit locality, for routing tests.
+    struct Stub {
+        id: &'static str,
+        local: bool,
+    }
+    #[async_trait]
+    impl LlmProvider for Stub {
+        fn name(&self) -> &str {
+            self.id
+        }
+        fn is_local(&self) -> bool {
+            self.local
+        }
+        async fn fill_gap(&self, _: &GapFillRequest) -> Result<GapFillResponse, LlmError> {
+            unreachable!("routing tests never call fill_gap")
+        }
+    }
+
+    #[test]
+    fn routes_by_task_class_under_default_policy() {
+        let ollama = Stub {
+            id: "ollama",
+            local: true,
+        };
+        let anthropic = Stub {
+            id: "anthropic",
+            local: false,
+        };
+        let router = Router::new(vec![&ollama, &anthropic], /* air_gap */ false);
+
+        // Bulk leans local-first; reasoning and docs lean frontier-first.
+        assert_eq!(router.route(TaskClass::Bulk).unwrap().name(), "ollama");
+        assert_eq!(
+            router.route(TaskClass::HardReasoning).unwrap().name(),
+            "anthropic"
+        );
+        assert_eq!(
+            router.route(TaskClass::Documentation).unwrap().name(),
+            "anthropic"
+        );
+    }
+
+    #[test]
+    fn air_gap_routing_never_returns_a_frontier_provider() {
+        let ollama = Stub {
+            id: "ollama",
+            local: true,
+        };
+        let anthropic = Stub {
+            id: "anthropic",
+            local: false,
+        };
+        let router = Router::new(vec![&ollama, &anthropic], /* air_gap */ true);
+
+        // HardReasoning prefers the frontier, but air-gap skips it and falls
+        // back to the local provider — so no external call is ever made.
+        for class in [
+            TaskClass::Bulk,
+            TaskClass::HardReasoning,
+            TaskClass::Documentation,
+        ] {
+            let p = router.route(class).expect("a local provider resolves");
+            assert!(
+                p.is_local(),
+                "{class:?} must route to a local provider in air-gap"
+            );
+            assert_eq!(p.name(), "ollama");
+        }
+    }
+
+    #[test]
+    fn air_gap_with_only_a_frontier_provider_errors() {
+        let anthropic = Stub {
+            id: "anthropic",
+            local: false,
+        };
+        let router = Router::new(vec![&anthropic], /* air_gap */ true);
+        assert!(
+            matches!(
+                router.route(TaskClass::HardReasoning),
+                Err(LlmError::AirGapBlocked(_))
+            ),
+            "no local provider → AirGapBlocked, never a silent frontier call"
+        );
+    }
+
+    #[test]
+    fn custom_policy_overrides_preference_order() {
+        let ollama = Stub {
+            id: "ollama",
+            local: true,
+        };
+        let anthropic = Stub {
+            id: "anthropic",
+            local: false,
+        };
+        let policy = RoutingPolicy {
+            bulk: vec!["anthropic".into(), "ollama".into()],
+            ..RoutingPolicy::default()
+        };
+        let router =
+            Router::new(vec![&ollama, &anthropic], /* air_gap */ false).with_policy(policy);
+        assert_eq!(
+            router.route(TaskClass::Bulk).unwrap().name(),
+            "anthropic",
+            "custom policy sends Bulk to the frontier"
         );
     }
 }
