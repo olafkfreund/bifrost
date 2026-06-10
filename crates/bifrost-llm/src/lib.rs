@@ -13,6 +13,10 @@
 //! Air-gap capability is a first-class concern: see [`LlmProvider::is_local`] and
 //! [`Router`].
 
+mod anthropic;
+
+pub use anthropic::AnthropicProvider;
+
 use async_trait::async_trait;
 use bifrost_core::Gap;
 use serde::{Deserialize, Serialize};
@@ -84,6 +88,50 @@ pub fn build_gap_fill_prompt(req: &GapFillRequest) -> String {
         .replace("{{converted_yaml}}", &req.converted_yaml)
         .replace("{{importer_message}}", &req.importer_message)
         .replace("{{repo_context}}", &req.repo_context)
+}
+
+/// Parse a model's raw text answer into a [`GapFillResponse`].
+///
+/// Models often wrap JSON in ```` ```json ```` fences or add a sentence before
+/// it, so we extract the outermost `{ … }` object before deserializing. Shared
+/// by every provider so the wire contract is enforced in exactly one place.
+pub(crate) fn parse_gap_fill(text: &str) -> Result<GapFillResponse, LlmError> {
+    let json = extract_json_object(text)
+        .ok_or_else(|| LlmError::Parse(format!("no JSON object in model output: {text}")))?;
+    serde_json::from_str(json).map_err(|e| LlmError::Parse(format!("{e}: {json}")))
+}
+
+/// Slice out the outermost balanced `{ … }` object from `s`, ignoring braces
+/// inside strings. Returns `None` if there is no balanced object.
+fn extract_json_object(s: &str) -> Option<&str> {
+    let bytes = s.as_bytes();
+    let start = s.find('{')?;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (i, &b) in bytes.iter().enumerate().skip(start) {
+        if in_string {
+            match b {
+                _ if escaped => escaped = false,
+                b'\\' => escaped = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&s[start..=i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Selects a provider, enforcing air-gap policy.
@@ -183,6 +231,25 @@ mod tests {
         let json = serde_json::to_string(&r).unwrap();
         assert!(!json.contains("score"), "response carries no risk score");
         assert!(json.contains("proposedYaml"));
+    }
+
+    #[test]
+    fn parse_gap_fill_unwraps_fenced_json_with_surrounding_prose() {
+        let raw = "Here is the fix:\n```json\n{\n  \"proposedYaml\": \"- run: echo hi\",\n  \
+                   \"rationale\": \"equivalent step\",\n  \"riskFlags\": [\"check secret\"],\n  \
+                   \"verifySteps\": [\"run in sandbox\"],\n  \"confidence\": 0.8\n}\n```\nDone.";
+        let r = parse_gap_fill(raw).expect("extracts JSON from fenced prose");
+        assert_eq!(r.proposed_yaml, "- run: echo hi");
+        assert_eq!(r.confidence, 0.8);
+        assert_eq!(r.risk_flags, vec!["check secret".to_string()]);
+    }
+
+    #[test]
+    fn parse_gap_fill_errors_when_no_json_present() {
+        assert!(matches!(
+            parse_gap_fill("I cannot help with that."),
+            Err(LlmError::Parse(_))
+        ));
     }
 
     #[tokio::test]
