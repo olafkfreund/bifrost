@@ -7,6 +7,7 @@
 //! Risk scoring lives here and is computed from explainable factors — never
 //! from the LLM (see the implementation plan, §6).
 
+pub mod assemble;
 pub mod audit;
 pub mod audit_log;
 pub mod conversion;
@@ -17,6 +18,7 @@ pub mod proposal;
 pub mod risk;
 pub mod runbook;
 
+pub use assemble::{assemble_workflow, GapFill};
 pub use audit::{AuditCounts, AuditSummary, ManualTask, ManualTaskKind, UnsupportedStep};
 pub use audit_log::{AuditEvent, AuditLog};
 pub use conversion::{build_pipeline, pipeline_from_dry_run, signals_from_dry_run, PipelineMeta};

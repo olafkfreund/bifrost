@@ -38,6 +38,13 @@ pub struct DryRunResult {
     /// Share of steps the Importer converted automatically (0.0–1.0).
     pub converted_ratio: f64,
     pub gaps: Vec<Gap>,
+    /// The Importer's converted GitHub Actions workflow (its baseline output),
+    /// which the assembler merges gap-fills into. Empty when only the dry-run
+    /// *log* was parsed (the log carries gaps, not the YAML — that lives in
+    /// separate files), so it is `#[serde(default)]` for backward-compatible
+    /// decoding.
+    #[serde(default)]
+    pub converted_yaml: String,
 }
 
 impl DryRunResult {

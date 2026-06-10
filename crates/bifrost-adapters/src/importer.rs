@@ -214,6 +214,9 @@ pub fn parse_dry_run(log: &str) -> DryRunResult {
         pipeline_id,
         converted_ratio,
         gaps,
+        // The log carries gaps, not the converted YAML; callers that have the
+        // Importer's output files set `converted_yaml` separately.
+        converted_yaml: String::new(),
     }
 }
 
