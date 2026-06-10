@@ -1,0 +1,18 @@
+# Representative `gh actions-importer dry-run` log (SYNTHETIC).
+# Stands in for a real capture so the parser has a stable fixture. Replace with a
+# genuine dry-run log (and record the Importer version) when one is available.
+
+Converting pipeline 'web-portal-release'...
+Converted 12 of 14 steps.
+
+Unsupported steps:
+- DownloadSecureFile@1: secure file download has no GitHub Actions equivalent
+- acme-corp.deploy.DeployTask@2: custom marketplace task, no first-party action
+
+Partial constructs:
+- strategy.matrix: multi-config matrix mapped with reduced fidelity
+
+Manual tasks:
+- secret: AZURE_CLIENT_SECRET must be configured as a repository secret
+- service-connection: azure-prod must be federated to GitHub via OIDC
+- environment: pre-deploy approval gate must be recreated as an Environment

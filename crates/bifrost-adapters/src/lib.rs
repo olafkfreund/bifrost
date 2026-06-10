@@ -7,4 +7,5 @@
 pub mod importer;
 pub mod source;
 
+pub use importer::{parse_audit_summary, parse_dry_run, Importer, ImporterError, MockImporter};
 pub use source::{AdapterError, MockSourceAdapter, SourceAdapter};
