@@ -14,8 +14,10 @@
 //! [`Router`].
 
 mod anthropic;
+mod ollama;
 
 pub use anthropic::AnthropicProvider;
+pub use ollama::OllamaProvider;
 
 use async_trait::async_trait;
 use bifrost_core::Gap;
