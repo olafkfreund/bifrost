@@ -7,9 +7,16 @@
 //! Risk scoring lives here and is computed from explainable factors — never
 //! from the LLM (see the implementation plan, §6).
 
+pub mod audit;
+pub mod ingestion;
 pub mod model;
 pub mod risk;
 
+pub use audit::{AuditCounts, AuditSummary, ManualTask, ManualTaskKind, UnsupportedStep};
+pub use ingestion::{
+    PipelineDefinition, Project, ServiceConnection, SourcePipeline, TaskKind, TaskUsage,
+    VariableGroup, VariableRef,
+};
 pub use model::{
     Classification, Pipeline, Portfolio, PortfolioSummary, PortfolioTotals, ProposalStatus,
     RiskBand, RiskFactor,
