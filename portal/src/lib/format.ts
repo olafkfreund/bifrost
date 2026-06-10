@@ -1,4 +1,4 @@
-import type { ProposalStatus, RiskBand } from '../types'
+import type { ChecklistCategory, ProposalStatus, RiskBand } from '../types'
 
 export const riskMeta: Record<RiskBand, { label: string; text: string; bg: string; dot: string; ring: string }> = {
   green: {
@@ -32,6 +32,17 @@ export const statusLabel: Record<ProposalStatus, string> = {
   approved: 'Approved',
   committed: 'Committed',
   validated: 'Validated',
+}
+
+/** Short, human label for a runbook checklist category. */
+export const checklistCategoryLabel: Record<ChecklistCategory, string> = {
+  secret: 'Secret',
+  service_connection: 'Service connection',
+  variable_group: 'Variable group',
+  self_hosted_runner: 'Runner',
+  environment: 'Environment',
+  replacement_action: 'Replacement action',
+  other: 'Manual task',
 }
 
 export function pct(ratio: number): string {

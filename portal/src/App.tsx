@@ -6,6 +6,7 @@ import { StatCards } from './components/StatCards'
 import { Heatmap } from './components/Heatmap'
 import { PipelineTable } from './components/PipelineTable'
 import { PipelineDrawer } from './components/PipelineDrawer'
+import { ProposalPanel } from './components/ProposalPanel'
 import { riskMeta } from './lib/format'
 import { useTheme } from './lib/theme'
 
@@ -18,6 +19,7 @@ export default function App() {
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<Pipeline | null>(null)
+  const [proposalFor, setProposalFor] = useState<Pipeline | null>(null)
   const [view, setView] = useState<View>('heatmap')
   const [filter, setFilter] = useState<Filter>('all')
   const [theme, toggleTheme] = useTheme()
@@ -110,7 +112,15 @@ export default function App() {
         wraps the official GitHub migration tools; it never reimplements their conversion logic.
       </footer>
 
-      <PipelineDrawer pipeline={selected} onClose={() => setSelected(null)} />
+      <PipelineDrawer
+        pipeline={selected}
+        onClose={() => setSelected(null)}
+        onOpenProposal={(p) => {
+          setSelected(null)
+          setProposalFor(p)
+        }}
+      />
+      <ProposalPanel pipeline={proposalFor} api={api} onClose={() => setProposalFor(null)} />
     </div>
   )
 }
