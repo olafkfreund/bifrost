@@ -15,7 +15,16 @@ async fn health() -> Json<Value> {
     Json(json!({ "status": "ok", "service": "bifrost-api" }))
 }
 
+/// Serve a real portfolio from the JSON file named by `BIFROST_PORTFOLIO`
+/// (e.g. produced by `bifrost audit --json`), falling back to the sample.
 async fn portfolio() -> Json<bifrost_core::Portfolio> {
+    if let Ok(path) = std::env::var("BIFROST_PORTFOLIO") {
+        match std::fs::read_to_string(&path).map(|s| serde_json::from_str(&s)) {
+            Ok(Ok(p)) => return Json(p),
+            Ok(Err(e)) => tracing::warn!("BIFROST_PORTFOLIO parse error: {e}; using sample"),
+            Err(e) => tracing::warn!("BIFROST_PORTFOLIO read error: {e}; using sample"),
+        }
+    }
     Json(sample::portfolio())
 }
 
