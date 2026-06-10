@@ -12,12 +12,15 @@ mod sample;
 
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
 use axum::{
     routing::{get, post},
     Json, Router,
 };
-use bifrost_core::Portfolio;
+use bifrost_adapters::{convert_pipeline, ConversionOutcome, MockImporter};
+use bifrost_core::{Classification, Portfolio};
+use bifrost_llm::{MockLlmProvider, Router as LlmRouter, RoutingPolicy};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
@@ -40,11 +43,55 @@ async fn refresh(State(state): State<Shared>) -> Json<Portfolio> {
     Json(fresh)
 }
 
+/// Convert one pipeline into a [`ConversionOutcome`] (proposal + runbook).
+///
+/// Returns `{ proposal, runbook }` as JSON, or a 500 with the error message.
+async fn convert(Path(id): Path<String>) -> Result<Json<Value>, (StatusCode, String)> {
+    let outcome = run_conversion(&id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!({
+        "proposal": outcome.proposal,
+        "runbook": outcome.runbook,
+    })))
+}
+
+/// Run the conversion loop for `pipeline_id` with the offline provider set.
+///
+/// Uses `MockImporter` + a local `MockLlmProvider` so the endpoint works with
+/// zero setup (no Docker, no API key). Live providers (Docker Importer +
+/// Anthropic/Ollama via the air-gap-aware router) are env-gated future work,
+/// mirroring how the portfolio source is resolved.
+async fn run_conversion(
+    pipeline_id: &str,
+) -> Result<ConversionOutcome, bifrost_adapters::ConversionError> {
+    let importer = MockImporter;
+    let provider = MockLlmProvider;
+    // Route every task class to the local mock provider.
+    let policy = RoutingPolicy {
+        bulk: vec!["mock".into()],
+        hard: vec!["mock".into()],
+        docs: vec!["mock".into()],
+    };
+    let router = LlmRouter::new(vec![&provider], /* air_gap */ false).with_policy(policy);
+
+    convert_pipeline(
+        &importer,
+        &router,
+        pipeline_id,
+        &format!("prop-{pipeline_id}"),
+        Classification::Yaml,
+        "languages: unknown",
+    )
+    .await
+}
+
 fn app(state: Shared) -> Router {
     Router::new()
         .route("/api/health", get(health))
         .route("/api/portfolio", get(portfolio))
         .route("/api/refresh", post(refresh))
+        .route("/api/pipelines/:id/convert", post(convert))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -131,4 +178,22 @@ async fn main() -> anyhow::Result<()> {
 
     axum::serve(listener, app(state)).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bifrost_core::ProposalStatus;
+
+    #[tokio::test]
+    async fn conversion_helper_produces_a_draft_proposal_and_runbook() {
+        let outcome = run_conversion("SARC-main")
+            .await
+            .expect("offline conversion succeeds");
+        assert_eq!(outcome.proposal.status, ProposalStatus::Draft);
+        assert_eq!(outcome.proposal.pipeline_id, "SARC-main");
+        // Assembled workflow + populated manual-task runbook are present.
+        assert!(outcome.proposal.proposed_yaml.contains("REVIEW BEFORE USE"));
+        assert!(!outcome.runbook.is_empty());
+    }
 }
