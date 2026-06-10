@@ -8,13 +8,16 @@
 //! from the LLM (see the implementation plan, §6).
 
 pub mod audit;
+pub mod audit_log;
 pub mod conversion;
 pub mod gap;
 pub mod ingestion;
 pub mod model;
+pub mod proposal;
 pub mod risk;
 
 pub use audit::{AuditCounts, AuditSummary, ManualTask, ManualTaskKind, UnsupportedStep};
+pub use audit_log::{AuditEvent, AuditLog};
 pub use conversion::{build_pipeline, pipeline_from_dry_run, signals_from_dry_run, PipelineMeta};
 pub use gap::{DryRunResult, Gap, GapKind};
 pub use ingestion::{
@@ -25,4 +28,5 @@ pub use model::{
     Classification, Pipeline, Portfolio, PortfolioSummary, PortfolioTotals, ProposalStatus,
     RiskBand, RiskFactor,
 };
+pub use proposal::{is_legal_transition, Proposal, ProposalError};
 pub use risk::{assess, band_for_score, RiskAssessment, RiskSignals};
