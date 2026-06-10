@@ -15,7 +15,7 @@ pub mod model;
 pub mod risk;
 
 pub use audit::{AuditCounts, AuditSummary, ManualTask, ManualTaskKind, UnsupportedStep};
-pub use conversion::{build_pipeline, PipelineMeta};
+pub use conversion::{build_pipeline, pipeline_from_dry_run, signals_from_dry_run, PipelineMeta};
 pub use gap::{DryRunResult, Gap, GapKind};
 pub use ingestion::{
     PipelineDefinition, Project, ServiceConnection, SourcePipeline, TaskKind, TaskUsage,
