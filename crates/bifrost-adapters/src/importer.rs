@@ -12,25 +12,14 @@ use bifrost_core::{
     UnsupportedStep,
 };
 
-/// Strip a leading markdown bullet (`- ` / `* `) if present.
-fn bullet(line: &str) -> Option<&str> {
-    let t = line.trim_start();
-    t.strip_prefix("- ")
-        .or_else(|| t.strip_prefix("* "))
-        .map(str::trim)
-}
-
-/// Strip leading `#`s from a heading line and return the trimmed title.
-fn heading(line: &str) -> Option<&str> {
-    let t = line.trim_start();
-    t.starts_with('#').then(|| t.trim_start_matches('#').trim())
-}
-
-/// Parse a `"Label: 12"` stat line into `(label_lowercased, count)`.
-fn stat(item: &str) -> Option<(String, u32)> {
-    let (label, value) = item.split_once(':')?;
-    let n: u32 = value.split_whitespace().next()?.parse().ok()?;
-    Some((label.trim().to_ascii_lowercase(), n))
+/// First unsigned integer appearing in `s` (handles bold/percent like `**126 (88%)**`).
+fn leading_uint(s: &str) -> Option<u32> {
+    let digits: String = s
+        .chars()
+        .skip_while(|c| !c.is_ascii_digit())
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    digits.parse().ok()
 }
 
 fn apply_count(counts: &mut AuditCounts, label: &str, n: u32) {
@@ -44,61 +33,116 @@ fn apply_count(counts: &mut AuditCounts, label: &str, n: u32) {
     }
 }
 
+/// Extract `NAME` from a `` `${{ secrets.NAME }}` `` manual-task reference.
+fn secret_name(item: &str) -> Option<String> {
+    let start = item.find("secrets.")? + "secrets.".len();
+    let name: String = item[start..]
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    (!name.is_empty()).then_some(name)
+}
+
 /// Parse a `gh actions-importer audit` summary into a typed [`AuditSummary`].
 ///
-/// Tolerant of heading level (`#` vs `##`): sections are matched by their unique
-/// titles. Unknown sections are ignored so new Importer output doesn't break it.
+/// Matches the real Importer markdown: bold counts with percentages
+/// (`**126 (88%)**`), a plain `Total:` line, and the Build-steps section's inline
+/// Known/Unknown/Actions buckets. Unknown lines are ignored so format drift in
+/// sections we don't consume can't break it.
 pub fn parse_audit_summary(md: &str) -> AuditSummary {
     let mut summary = AuditSummary::default();
-    let mut section = String::new();
+    let mut h3 = String::new(); // current `###` section, lowercased
+    let mut bucket = String::new(); // Build-steps/Manual-tasks sub-bucket
+    let mut pipelines_top = false; // inside `## Pipelines`, before any `###`
 
-    for line in md.lines() {
-        if let Some(title) = heading(line) {
-            section = title.to_ascii_lowercase();
+    for raw in md.lines() {
+        let line = raw.trim();
+        if line.is_empty() {
             continue;
         }
-        let Some(item) = bullet(line) else { continue };
 
-        match section.as_str() {
-            "pipelines" => {
-                if let Some((label, n)) = stat(item) {
-                    apply_count(&mut summary.pipelines, &label, n);
+        if let Some(t) = line.strip_prefix("### ") {
+            h3 = t.trim().to_ascii_lowercase();
+            pipelines_top = false;
+            bucket.clear();
+            continue;
+        }
+        if let Some(t) = line.strip_prefix("## ") {
+            pipelines_top = t.trim().eq_ignore_ascii_case("Pipelines");
+            h3.clear();
+            bucket.clear();
+            continue;
+        }
+        if line.starts_with('#') {
+            continue; // `# Audit summary`, `#### per-pipeline`, etc.
+        }
+
+        let bullet = line.strip_prefix("- ").map(str::trim);
+
+        // Plain `Label: **N**` lines set counts and/or select a sub-bucket.
+        if bullet.is_none() {
+            if let Some((label, rest)) = line.split_once(':') {
+                let label = label.trim().to_ascii_lowercase();
+                let n = leading_uint(rest);
+                if pipelines_top && label == "total" {
+                    summary.pipelines.total = n.unwrap_or(0);
+                } else if h3 == "build steps" {
+                    match label.as_str() {
+                        "total" => summary.build_steps.total = n.unwrap_or(0),
+                        "known" => {
+                            summary.build_steps.successful = n.unwrap_or(0);
+                            bucket = "known".into();
+                        }
+                        "unknown" => {
+                            summary.build_steps.unsupported = n.unwrap_or(0);
+                            bucket = "unknown".into();
+                        }
+                        "actions" => bucket = "actions".into(),
+                        _ => {}
+                    }
+                } else if h3 == "manual tasks" && label == "secrets" {
+                    bucket = "secrets".into();
                 }
             }
-            "build steps" => {
-                if let Some((label, n)) = stat(item) {
-                    apply_count(&mut summary.build_steps, &label, n);
+            continue;
+        }
+
+        let item = bullet.unwrap();
+        if pipelines_top {
+            if let Some((label, rest)) = item.split_once(':') {
+                if let Some(n) = leading_uint(rest) {
+                    apply_count(
+                        &mut summary.pipelines,
+                        &label.trim().to_ascii_lowercase(),
+                        n,
+                    );
                 }
             }
-            "unsupported build steps" => {
-                // `stat` lowercases the label, so take the count from it but keep
-                // the original task casing from `item`.
-                if let Some((_, n)) = stat(item) {
-                    let task = item.split_once(':').map(|(t, _)| t.trim()).unwrap_or(item);
-                    summary.unsupported_steps.push(UnsupportedStep {
-                        task: task.into(),
-                        count: n,
-                    });
+        } else if h3 == "build steps" {
+            match bucket.as_str() {
+                "unknown" => {
+                    if let Some((task, rest)) = item.split_once(':') {
+                        if let Some(n) = leading_uint(rest) {
+                            summary.unsupported_steps.push(UnsupportedStep {
+                                task: task.trim().into(),
+                                count: n,
+                            });
+                        }
+                    }
                 }
+                "actions" => {
+                    let action = item.split_once(':').map(|(a, _)| a.trim()).unwrap_or(item);
+                    summary.actions.push(action.into());
+                }
+                _ => {}
             }
-            "secrets" => {
+        } else if h3 == "manual tasks" && bucket == "secrets" {
+            if let Some(name) = secret_name(item) {
                 summary.manual_tasks.push(ManualTask {
                     kind: ManualTaskKind::Secret,
-                    name: item.into(),
+                    name,
                 });
             }
-            "self hosted runners" => {
-                let name = item.split_once(':').map(|(n, _)| n.trim()).unwrap_or(item);
-                summary.manual_tasks.push(ManualTask {
-                    kind: ManualTaskKind::SelfHostedRunner,
-                    name: name.into(),
-                });
-            }
-            "actions" => {
-                let action = item.split_once(':').map(|(a, _)| a.trim()).unwrap_or(item);
-                summary.actions.push(action.into());
-            }
-            _ => {}
         }
     }
     summary
@@ -225,33 +269,34 @@ mod tests {
     const FIXTURE: &str = include_str!("../../../fixtures/audit_summary.md");
 
     #[test]
-    fn parses_pipeline_and_step_counts() {
+    fn parses_pipeline_and_step_counts_from_bold_percent_format() {
         let a = parse_audit_summary(FIXTURE);
-        assert_eq!(a.pipelines.total, 16);
-        assert_eq!(a.pipelines.successful, 9);
-        assert_eq!(a.pipelines.partially_successful, 4);
-        assert_eq!(a.pipelines.unsupported, 2);
-        assert_eq!(a.pipelines.failed, 1);
+        assert_eq!(a.pipelines.total, 3);
+        assert_eq!(a.pipelines.successful, 1);
+        assert_eq!(a.pipelines.partially_successful, 1);
+        assert_eq!(a.pipelines.unsupported, 1);
+        assert_eq!(a.pipelines.failed, 0);
 
-        assert_eq!(a.build_steps.total, 120);
-        assert_eq!(a.build_steps.successful, 100);
-        assert_eq!(a.build_steps.unsupported, 15);
+        // Build steps map Known→successful, Unknown→unsupported.
+        assert_eq!(a.build_steps.total, 20);
+        assert_eq!(a.build_steps.successful, 17);
+        assert_eq!(a.build_steps.unsupported, 3);
     }
 
     #[test]
-    fn parses_unsupported_steps_with_counts() {
+    fn parses_unknown_build_steps_with_counts() {
         let a = parse_audit_summary(FIXTURE);
-        assert_eq!(a.unsupported_steps.len(), 3);
-        let deploy = a
+        assert_eq!(a.unsupported_steps.len(), 2);
+        let cache = a
             .unsupported_steps
             .iter()
-            .find(|s| s.task == "acme-corp.deploy.DeployTask@2")
-            .expect("custom task present");
-        assert_eq!(deploy.count, 7);
+            .find(|s| s.task == "Cache@2")
+            .expect("unknown step present");
+        assert_eq!(cache.count, 2);
     }
 
     #[test]
-    fn parses_manual_tasks_secrets_and_runners() {
+    fn parses_manual_task_secret_names() {
         let a = parse_audit_summary(FIXTURE);
         let secrets: Vec<_> = a
             .manual_tasks
@@ -259,39 +304,45 @@ mod tests {
             .filter(|m| m.kind == ManualTaskKind::Secret)
             .map(|m| m.name.as_str())
             .collect();
-        assert_eq!(
-            secrets,
-            ["AZURE_CLIENT_SECRET", "SONAR_TOKEN", "REGISTRY_PASSWORD"]
-        );
-
-        let runners: Vec<_> = a
-            .manual_tasks
-            .iter()
-            .filter(|m| m.kind == ManualTaskKind::SelfHostedRunner)
-            .map(|m| m.name.as_str())
-            .collect();
-        assert_eq!(runners, ["linux-pool", "macos-pool"]);
+        assert_eq!(secrets, ["AZURE_CLIENT_SECRET", "REGISTRY_TOKEN"]);
     }
 
     #[test]
     fn parses_actions_allowlist_without_counts() {
         let a = parse_audit_summary(FIXTURE);
-        assert_eq!(
-            a.actions,
-            [
-                "actions/checkout@v4",
-                "actions/setup-node@v4",
-                "azure/login@v2"
-            ]
-        );
+        assert_eq!(a.actions, ["run", "actions/checkout@v4.1.0"]);
     }
 
     #[test]
     fn unknown_sections_are_ignored() {
-        let md = "# Surprise\n- something: 5\n# Pipelines\n- Total: 3\n";
+        let md = "## Surprise\n- something: **5**\n## Pipelines\nTotal: **3**\n";
         let a = parse_audit_summary(md);
         assert_eq!(a.pipelines.total, 3);
         assert!(a.actions.is_empty());
+    }
+
+    /// Parse a real `audit_summary.md` from a live run when its path is given via
+    /// `BIFROST_REAL_AUDIT`. Skipped by default; run with:
+    ///   `BIFROST_REAL_AUDIT=/path/to/audit_summary.md cargo test -- --ignored`
+    #[test]
+    #[ignore = "requires a real audit_summary.md path in BIFROST_REAL_AUDIT"]
+    fn parses_a_real_audit_summary() {
+        let path = std::env::var("BIFROST_REAL_AUDIT").expect("BIFROST_REAL_AUDIT set");
+        let md = std::fs::read_to_string(path).expect("readable audit_summary.md");
+        let a = parse_audit_summary(&md);
+        eprintln!(
+            "real audit: pipelines total={} partial={} | steps total={} known={} unknown={} | unsupported_kinds={} secrets={} actions={}",
+            a.pipelines.total,
+            a.pipelines.partially_successful,
+            a.build_steps.total,
+            a.build_steps.successful,
+            a.build_steps.unsupported,
+            a.unsupported_steps.len(),
+            a.manual_tasks.len(),
+            a.actions.len(),
+        );
+        assert!(a.pipelines.total > 0, "parsed at least one pipeline");
+        assert!(a.build_steps.total > 0, "parsed build steps");
     }
 
     const DRY_RUN: &str = include_str!("../../../fixtures/dry_run.log");
@@ -321,7 +372,7 @@ mod tests {
     async fn mock_importer_audits_and_dry_runs() {
         let imp = MockImporter;
         assert_eq!(imp.version().await.unwrap(), "mock-importer");
-        assert_eq!(imp.audit().await.unwrap().pipelines.total, 16);
+        assert_eq!(imp.audit().await.unwrap().pipelines.total, 3);
 
         let r = imp.dry_run("payments-api-deploy").await.unwrap();
         assert_eq!(r.pipeline_id, "payments-api-deploy"); // id overridden to request
