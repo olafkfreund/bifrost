@@ -14,7 +14,15 @@ semantically reviewed, human-approved, fully documented, and **air-gap capable**
 {: .fs-6 .fw-300 }
 
 [Read the plan](plan){: .btn .btn-primary .fs-5 .mb-4 .mb-md-0 .mr-2 }
+[See it in action](screenshots){: .btn .fs-5 .mb-4 .mb-md-0 .mr-2 }
 [View on GitHub](https://github.com/olafkfreund/bifrost){: .btn .fs-5 .mb-4 .mb-md-0 }
+
+---
+
+[![The Bifrost portfolio heatmap — migration risk across an Azure DevOps org]({{ '/assets/screenshots/portfolio-heatmap.png' | relative_url }})](screenshots)
+
+<small>The portfolio heatmap — migration risk across an Azure DevOps org, at a glance.
+[See more of the portal →](screenshots)</small>
 
 ---
 
