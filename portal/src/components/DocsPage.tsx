@@ -142,6 +142,10 @@ export function DocsPage() {
               <li>
                 4. The proposal panel calls <Code>POST /api/pipelines/:id/convert</Code>.
               </li>
+              <li>
+                5. Set <Code>BIFROST_DB=sqlite:bifrost.db</Code> to persist proposals + the audit log
+                across restarts (default: in-memory). Postgres mode follows.
+              </li>
             </ol>
             <p className="mt-3 text-sm text-ink-300">
               <span className="font-medium text-ink-100">Air-gap mode</span> runs with a local model only
