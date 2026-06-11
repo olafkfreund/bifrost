@@ -119,6 +119,7 @@ pub fn spawn_convert_job(
     job_id: String,
     store: Arc<dyn ProposalStore>,
     pipelines: Vec<(String, Option<String>)>,
+    tenant: String,
 ) -> Arc<JobState> {
     let (tx, _) = broadcast::channel(EVENT_CAP);
     let job = Arc::new(JobState {
@@ -149,9 +150,10 @@ pub fn spawn_convert_job(
             let permit = sem.clone().acquire_owned().await.expect("semaphore open");
             let store = store.clone();
             let job = run.clone();
+            let tenant = tenant.clone();
             set.spawn(async move {
                 let _permit = permit;
-                let item = convert_one(store.as_ref(), &pid, project.as_deref()).await;
+                let item = convert_one(store.as_ref(), &pid, project.as_deref(), &tenant).await;
                 job.emit_item(item).await;
             });
         }
@@ -167,6 +169,7 @@ async fn convert_one(
     store: &dyn ProposalStore,
     pipeline_id: &str,
     project: Option<&str>,
+    tenant: &str,
 ) -> JobItem {
     let proposal_id = proposal_id_for(pipeline_id);
     if matches!(store.get(&proposal_id).await, Ok(Some(_))) {
@@ -183,6 +186,7 @@ async fn convert_one(
                 proposal: outcome.proposal,
                 runbook: outcome.runbook,
                 audit: AuditLog::new(),
+                tenant: tenant.to_string(),
             };
             match store.put(&rec).await {
                 Ok(()) => JobItem {
@@ -231,7 +235,7 @@ mod tests {
             ("web-portal-ci".to_string(), None),
             ("payments-api-ci".to_string(), None),
         ];
-        let job = spawn_convert_job("job-1".into(), store.clone(), ids);
+        let job = spawn_convert_job("job-1".into(), store.clone(), ids, "default".into());
         wait_finished(&job).await;
 
         let snap = job.snapshot().await;
@@ -247,11 +251,11 @@ mod tests {
     async fn job_skips_already_converted_pipelines() {
         let store: Arc<dyn ProposalStore> = Arc::new(InMemoryStore::default());
         let one = vec![("web-portal-ci".to_string(), None)];
-        let job = spawn_convert_job("job-1".into(), store.clone(), one.clone());
+        let job = spawn_convert_job("job-1".into(), store.clone(), one.clone(), "default".into());
         wait_finished(&job).await;
 
         // Second run over the same pipeline skips it (resumability).
-        let job2 = spawn_convert_job("job-2".into(), store.clone(), one);
+        let job2 = spawn_convert_job("job-2".into(), store.clone(), one, "default".into());
         wait_finished(&job2).await;
         assert_eq!(job2.snapshot().await["items"][0]["skipped"], true);
     }

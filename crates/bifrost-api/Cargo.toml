@@ -27,5 +27,10 @@ tokio-stream = { workspace = true }
 reqwest = { workspace = true }
 jsonwebtoken = { workspace = true }
 
+[dev-dependencies]
+# Router-level tests (auth middleware): drive the Service directly.
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+
 [lints]
 workspace = true
