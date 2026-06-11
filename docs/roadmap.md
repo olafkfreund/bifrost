@@ -71,23 +71,27 @@ The React portal where humans review and approve.
 - Manual-task tracker gating the terminal state — done
 
 ## M5 — Validation
-{: .label .label-yellow }In progress
+{: .label .label-green }Done
 
 - Sandbox trigger via `workflow_dispatch` — done
 - Capture run result + artifacts (status, jobs, declared outputs) — done
 - Parity diff vs ADO baseline (smoke parity, **not** full equivalence) — done
-- Parity report + attestation surfaced before commit approval — planned
+- Parity report + attestation recorded on the proposal before validation — done
 
 ## M6 — Compliance + Deploy
-{: .label .label-blue }Planned
+{: .label .label-yellow }In progress
 
-- Signed attestation record + export (consider in-toto / provenance format)
-- Compliance audit pack export
-- GitHub App auth (least privilege) + Entra ID OIDC SSO
-- Multi-tenancy + RBAC; packaging (Docker Compose → Helm)
+- Signed, exportable per-migration attestation (in-toto-inspired, HMAC-signed) — done
+- Per-org compliance audit pack export — done
+- GitHub App auth (least-privilege installation tokens) — done
+- Packaging: Docker Compose (self-host) + Helm chart (EKS/AKS/GKE) — done
+- Entra ID OIDC SSO for the portal — in progress
+- Multi-tenancy + RBAC — in progress
 
 ---
 
 > **Where we are:** the conversion loop is complete and runs end-to-end against live Azure DevOps
-> projects (audit → convert → review → approve → PR → sandbox-validate). Current focus is
-> finishing **M5 Validation** (parity report + attestation), then **M6 Compliance + Deploy**.
+> projects — audit → convert → review → approve → PR → sandbox-validate → parity → a signed
+> attestation and an org audit pack — deployable via Docker Compose or Helm, authenticating to
+> GitHub with a least-privilege App. Current focus is the last of **M6**: portal SSO (Entra ID)
+> and multi-tenancy + RBAC.
