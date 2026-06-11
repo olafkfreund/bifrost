@@ -369,22 +369,33 @@ async fn start_convert_job(
     body: Option<Json<ConvertJobBody>>,
 ) -> Json<Value> {
     let body = body.map(|Json(b)| b).unwrap_or_default();
-    let ids = match body.pipeline_ids {
-        Some(ids) => ids,
-        None => state
-            .portfolio
-            .read()
-            .await
+    // Build (pipeline_id, project) pairs so each conversion audits the right ADO
+    // project live. Explicit ids resolve their project from the portfolio too.
+    let portfolio = state.portfolio.read().await;
+    let project_of = |id: &str| {
+        portfolio
+            .pipelines
+            .iter()
+            .find(|p| p.id == id)
+            .map(|p| p.project.clone())
+    };
+    let pairs: Vec<(String, Option<String>)> = match body.pipeline_ids {
+        Some(ids) => ids
+            .into_iter()
+            .map(|id| (id.clone(), project_of(&id)))
+            .collect(),
+        None => portfolio
             .pipelines
             .iter()
             .filter(|p| p.status == ProposalStatus::NotStarted)
-            .map(|p| p.id.clone())
+            .map(|p| (p.id.clone(), Some(p.project.clone())))
             .collect(),
     };
+    drop(portfolio);
 
     let n = state.next_job.fetch_add(1, Ordering::Relaxed);
     let id = format!("job-{n}");
-    let job = jobs::spawn_convert_job(id.clone(), state.store.clone(), ids);
+    let job = jobs::spawn_convert_job(id.clone(), state.store.clone(), pairs);
     state.jobs.write().await.insert(id.clone(), job.clone());
     Json(json!({ "jobId": id, "total": job.total }))
 }
