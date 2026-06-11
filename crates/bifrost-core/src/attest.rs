@@ -140,6 +140,114 @@ impl SignedMigrationAttestation {
     }
 }
 
+/// Deterministic roll-up of an [`AuditPack`]: how many migrations, how many
+/// validated, and the spread of parity verdicts. Fixed fields (no maps) so the
+/// pack signs deterministically.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditPackSummary {
+    pub total: usize,
+    pub validated: usize,
+    pub parity_pass: usize,
+    pub parity_gaps: usize,
+    pub parity_unattested: usize,
+}
+
+/// A per-org compliance audit pack (#63): every migration's signed attestation
+/// (who/what/why/when + parity) bundled into one artifact for auditors, with a
+/// summary roll-up. The pack itself is signed, so the whole set is tamper-evident
+/// — not just the individual attestations.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditPack {
+    /// Caller-supplied ISO-8601 timestamp (the core does not read a clock).
+    pub generated_at: String,
+    pub summary: AuditPackSummary,
+    pub attestations: Vec<SignedMigrationAttestation>,
+}
+
+impl AuditPack {
+    /// Assemble a pack from per-migration signed attestations, computing the
+    /// summary. The attestations are sorted by `proposalId` so the pack — and its
+    /// signature — is deterministic regardless of store iteration order.
+    pub fn build(
+        generated_at: impl Into<String>,
+        mut signed: Vec<SignedMigrationAttestation>,
+    ) -> Self {
+        signed.sort_by(|a, b| a.attestation.proposal_id.cmp(&b.attestation.proposal_id));
+        let total = signed.len();
+        let validated = signed
+            .iter()
+            .filter(|s| s.attestation.predicate.status == ProposalStatus::Validated)
+            .count();
+        let mut parity_pass = 0;
+        let mut parity_gaps = 0;
+        let mut parity_unattested = 0;
+        for s in &signed {
+            match &s.attestation.predicate.parity {
+                Some(a) if a.verdict == crate::parity::ParityVerdict::Pass => parity_pass += 1,
+                Some(_) => parity_gaps += 1,
+                None => parity_unattested += 1,
+            }
+        }
+        Self {
+            generated_at: generated_at.into(),
+            summary: AuditPackSummary {
+                total,
+                validated,
+                parity_pass,
+                parity_gaps,
+                parity_unattested,
+            },
+            attestations: signed,
+        }
+    }
+
+    fn canonical_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("audit pack serializes")
+    }
+
+    /// Sign the pack with `key`, tagging the signature with `key_id`.
+    pub fn sign(self, key: &[u8], key_id: impl Into<String>) -> SignedAuditPack {
+        let value = hmac_sha256_hex(key, &self.canonical_bytes());
+        SignedAuditPack {
+            pack: self,
+            signature: Signature {
+                algorithm: "hmac-sha256".to_string(),
+                key_id: key_id.into(),
+                value,
+            },
+        }
+    }
+}
+
+/// A signed [`AuditPack`] — the exportable, verifiable compliance artifact (#63).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignedAuditPack {
+    #[serde(flatten)]
+    pub pack: AuditPack,
+    pub signature: Signature,
+}
+
+impl SignedAuditPack {
+    /// Verify the pack-level signature against `key`. (Each attestation inside can
+    /// also be verified individually via [`SignedMigrationAttestation::verify`].)
+    pub fn verify(&self, key: &[u8]) -> bool {
+        if self.signature.algorithm != "hmac-sha256" {
+            return false;
+        }
+        let Some(expected) = hex_decode(&self.signature.value) else {
+            return false;
+        };
+        let Ok(mut mac) = HmacSha256::new_from_slice(key) else {
+            return false;
+        };
+        mac.update(&self.pack.canonical_bytes());
+        mac.verify_slice(&expected).is_ok()
+    }
+}
+
 /// HMAC-SHA256 of `bytes` under `key`, hex-encoded. HMAC accepts any key length.
 fn hmac_sha256_hex(key: &[u8], bytes: &[u8]) -> String {
     let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
@@ -254,6 +362,42 @@ mod tests {
         let a = MigrationAttestation::build(&p, log.events()).sign(key, "k");
         let b = MigrationAttestation::build(&p, log.events()).sign(key, "k");
         assert_eq!(a.signature.value, b.signature.value);
+    }
+
+    #[test]
+    fn audit_pack_summarizes_signs_and_verifies() {
+        let key = b"pack-key";
+        let (p, log) = committed_with_trail();
+        let a = MigrationAttestation::build(&p, log.events()).sign(key, "k");
+
+        // A second migration, still a draft (no decisions, no parity).
+        let mut p2 = proposal();
+        p2.id = "prop-2".into();
+        p2.pipeline_id = "OTHER-main".into();
+        let b = MigrationAttestation::build(&p2, &[]).sign(key, "k");
+
+        // Build out of order — the pack sorts by proposalId for determinism.
+        let pack = AuditPack::build("2026-06-11T00:00:00Z", vec![b, a]);
+        assert_eq!(pack.summary.total, 2);
+        assert_eq!(pack.summary.parity_unattested, 2);
+        assert_eq!(pack.attestations[0].attestation.proposal_id, "prop-1");
+
+        let signed = pack.sign(key, "pack");
+        assert!(signed.verify(key));
+        assert!(!signed.verify(b"wrong"));
+    }
+
+    #[test]
+    fn audit_pack_build_is_order_independent() {
+        let key = b"k";
+        let (p, log) = committed_with_trail();
+        let a = MigrationAttestation::build(&p, log.events()).sign(key, "k");
+        let mut p2 = proposal();
+        p2.id = "prop-2".into();
+        let b = MigrationAttestation::build(&p2, &[]).sign(key, "k");
+        let sig1 = AuditPack::build("t", vec![a.clone(), b.clone()]).sign(key, "p");
+        let sig2 = AuditPack::build("t", vec![b, a]).sign(key, "p");
+        assert_eq!(sig1.signature.value, sig2.signature.value);
     }
 
     #[test]

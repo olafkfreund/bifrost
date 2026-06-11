@@ -31,8 +31,8 @@ use bifrost_adapters::{
     Publisher, RunCollector, RunQuery, SandboxTrigger, TriggerRequest,
 };
 use bifrost_core::{
-    compare_parity, Attestation, AuditLog, Classification, MigrationAttestation, ParityReport,
-    Portfolio, ProposalStatus, RunFacts,
+    compare_parity, Attestation, AuditLog, AuditPack, Classification, MigrationAttestation,
+    ParityReport, Portfolio, ProposalStatus, RunFacts,
 };
 use bifrost_llm::{MockLlmProvider, Router as LlmRouter, RoutingPolicy};
 use serde::Deserialize;
@@ -686,6 +686,26 @@ async fn attestation(
         .map_err(|e| internal(e.into()))
 }
 
+/// Export the per-org **compliance audit pack** (#63): every migration's signed
+/// attestation (who/what/why/when + parity), bundled into one tamper-evident,
+/// signed artifact with a summary roll-up — the single file an auditor needs.
+/// Air-gap safe. Each attestation is individually signed; the pack is signed too.
+async fn audit_pack(State(state): State<Shared>) -> Result<Json<Value>, (StatusCode, String)> {
+    let all = state.store.list().await.map_err(internal)?;
+    let (key, key_id) = signing_key();
+    let signed: Vec<_> = all
+        .iter()
+        .map(|rec| {
+            MigrationAttestation::build(&rec.proposal, rec.audit.events())
+                .sign(&key, key_id.clone())
+        })
+        .collect();
+    let pack = AuditPack::build(now_iso8601(), signed).sign(&key, key_id);
+    serde_json::to_value(&pack)
+        .map(Json)
+        .map_err(|e| internal(e.into()))
+}
+
 /// Body of `POST /api/jobs/convert`: which pipelines to convert. Omit
 /// `pipelineIds` to convert every not-yet-started pipeline in the portfolio.
 #[derive(Deserialize, Default)]
@@ -903,6 +923,7 @@ fn app(state: Shared) -> Router {
         .route("/api/proposals/:id/parity", get(parity))
         .route("/api/proposals/:id/attest", post(attest))
         .route("/api/proposals/:id/attestation", get(attestation))
+        .route("/api/audit-pack", get(audit_pack))
         .route("/api/proposals/:id/runbook", patch(set_runbook_item))
         .route("/api/jobs/convert", post(start_convert_job))
         .route("/api/jobs/:id", get(job_status))
@@ -1351,6 +1372,25 @@ mod tests {
         let signed: bifrost_core::SignedMigrationAttestation = serde_json::from_value(doc).unwrap();
         assert!(signed.verify(b"bifrost-dev-key"));
         assert!(!signed.verify(b"wrong-key"));
+    }
+
+    #[tokio::test]
+    async fn audit_pack_bundles_every_migration_and_verifies() {
+        let state = test_state();
+        // Two converted pipelines → two migrations in the pack.
+        for id in ["SARC-main", "SARC-deploy"] {
+            let _ = convert(State(state.clone()), Path(id.into()))
+                .await
+                .unwrap();
+        }
+        let doc = audit_pack(State(state.clone())).await.unwrap().0;
+        assert_eq!(doc["summary"]["total"], 2);
+        assert_eq!(doc["attestations"].as_array().unwrap().len(), 2);
+        assert_eq!(doc["signature"]["algorithm"], "hmac-sha256");
+        // The whole pack verifies through the core verifier with the dev key.
+        let pack: bifrost_core::SignedAuditPack = serde_json::from_value(doc).unwrap();
+        assert!(pack.verify(b"bifrost-dev-key"));
+        assert!(!pack.verify(b"nope"));
     }
 
     #[tokio::test]
