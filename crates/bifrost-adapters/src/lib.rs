@@ -23,6 +23,7 @@ pub use publisher::{
 };
 pub use source::{AdapterError, MockSourceAdapter, SourceAdapter};
 pub use validate::{
-    GitHubSandboxTrigger, MockSandboxTrigger, SandboxTrigger, TriggerRequest, TriggerResult,
-    ValidateError,
+    declared_outputs, GitHubRunCollector, GitHubSandboxTrigger, MockRunCollector,
+    MockSandboxTrigger, RunArtifact, RunCollector, RunJob, RunQuery, RunResult, SandboxTrigger,
+    TriggerRequest, TriggerResult, ValidateError,
 };
