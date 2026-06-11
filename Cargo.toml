@@ -26,6 +26,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "process", "fs", "sync"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
 axum = "0.7"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 tracing = "0.1"

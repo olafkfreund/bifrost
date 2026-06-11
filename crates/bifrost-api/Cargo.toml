@@ -22,6 +22,7 @@ tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 sqlx = { workspace = true }
+tokio-stream = { workspace = true }
 
 [lints]
 workspace = true
