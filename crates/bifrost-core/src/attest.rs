@@ -41,6 +41,9 @@ pub struct MigrationPredicate {
     pub prompt_id: String,
     /// The model's certainty (NOT a risk score).
     pub confidence: f64,
+    /// LLM providers that produced the gap-fills (model provenance, #159).
+    #[serde(default)]
+    pub llm_providers: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr_url: Option<String>,
     /// Every recorded decision/approval for this proposal, oldest first.
@@ -74,6 +77,7 @@ impl MigrationAttestation {
                 risk_score: proposal.risk_score,
                 prompt_id: proposal.prompt_id.clone(),
                 confidence: proposal.confidence,
+                llm_providers: proposal.llm_providers.clone(),
                 pr_url: proposal.pr_url.clone(),
                 decisions: decisions.to_vec(),
                 parity: proposal.parity.clone(),
@@ -302,6 +306,16 @@ mod tests {
             0.8,
             &assessment,
         )
+    }
+
+    #[test]
+    fn attestation_records_model_provenance() {
+        let mut p = proposal();
+        p.llm_providers = vec!["ollama".into()];
+        let log = AuditLog::new();
+        let att = MigrationAttestation::build(&p, log.events());
+        // The auditor can read which models produced the gap-fills.
+        assert_eq!(att.predicate.llm_providers, vec!["ollama".to_string()]);
     }
 
     fn committed_with_trail() -> (Proposal, AuditLog) {

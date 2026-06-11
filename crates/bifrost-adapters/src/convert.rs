@@ -174,9 +174,13 @@ pub async fn convert_pipeline(
     let mut risk_flags: Vec<String> = Vec::new();
     let mut verify_steps: Vec<String> = Vec::new();
     let mut confidences: Vec<f64> = Vec::new();
+    // Model provenance (#159): which LLM provider(s) produced the gap-fills, so an
+    // auditor can prove e.g. only a local model touched this pipeline in air-gap.
+    let mut providers_used: Vec<String> = Vec::new();
 
     for gap in dry.gaps.iter().filter(|g| !gap_is_manual(g)) {
         let provider = router.route(task_class_for(gap))?;
+        providers_used.push(provider.name().to_string());
         let request = GapFillRequest {
             gap: gap.clone(),
             // Ground the model in the actual ADO source for this construct (its
@@ -207,7 +211,7 @@ pub async fn convert_pipeline(
         confidences.iter().sum::<f64>() / confidences.len() as f64
     };
 
-    let proposal = Proposal::new(
+    let mut proposal = Proposal::new(
         proposal_id,
         pipeline_id,
         dry.source_yaml.clone(),
@@ -219,6 +223,9 @@ pub async fn convert_pipeline(
         confidence,
         &assessment,
     );
+    providers_used.sort_unstable();
+    providers_used.dedup();
+    proposal.llm_providers = providers_used;
 
     Ok(ConversionOutcome { proposal, runbook })
 }
@@ -411,6 +418,9 @@ mod tests {
         .await
         .expect("air-gap conversion succeeds with a local provider");
         assert_eq!(outcome.proposal.status, ProposalStatus::Draft);
+        // Model provenance (#159): only the local provider produced the gap-fills,
+        // which is exactly what proves no frontier model touched this pipeline.
+        assert_eq!(outcome.proposal.llm_providers, vec!["mock".to_string()]);
     }
 
     const SOURCE: &str = "trigger:\n  branches:\n    include:\n      - main\n\nstrategy:\n  matrix:\n    linux:\n      imageName: ubuntu-latest\n    windows:\n      imageName: windows-latest\n\nsteps:\n  - task: DownloadSecureFile@1\n    name: signingCert\n    inputs:\n      secureFile: code-signing.pfx\n\n  - script: dotnet build\n    displayName: Build\n";
