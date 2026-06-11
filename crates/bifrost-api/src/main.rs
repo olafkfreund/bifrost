@@ -180,30 +180,87 @@ async fn edit(
     Ok(Json(record_json(&rec)))
 }
 
-/// Run the conversion loop for `pipeline_id` with the offline provider set.
+/// Run the conversion loop for `pipeline_id`, using live tooling where it is
+/// configured and falling back to the offline mocks otherwise.
 ///
-/// Uses `MockImporter` + a local `MockLlmProvider` so the endpoint works with
-/// zero setup (no Docker, no API key). Live providers (Docker Importer +
-/// Anthropic/Ollama via the air-gap-aware router) are env-gated future work,
-/// mirroring how the portfolio source is resolved.
+/// The live path is **opt-in** via `BIFROST_CONVERT_LIVE` — merely having an API
+/// key or ADO creds in the environment never silently triggers paid calls or a
+/// Docker run, and keeps tests deterministic. With it set:
+/// - **Importer**: the Docker `gh actions-importer` when `BIFROST_PROJECT` +
+///   `AZDO_ORG_URL` are set; otherwise `MockImporter`.
+/// - **LLM**: Anthropic when `ANTHROPIC_API_KEY` is set (and not air-gap), Ollama
+///   when `OLLAMA_BASE_URL` is set or air-gap is on; otherwise `MockLlmProvider`.
+/// - `BIFROST_AIR_GAP` forces local-only routing (the [`Router`] never returns a
+///   frontier), so no pipeline data leaves the box.
+///
+/// Unset, this is the zero-config mock path.
 async fn run_conversion(
     pipeline_id: &str,
 ) -> Result<ConversionOutcome, bifrost_adapters::ConversionError> {
-    let importer = MockImporter;
-    let provider = MockLlmProvider;
-    // Route every task class to the local mock provider.
-    let policy = RoutingPolicy {
-        bulk: vec!["mock".into()],
-        hard: vec!["mock".into()],
-        docs: vec!["mock".into()],
+    use bifrost_adapters::{DockerImporter, Importer};
+    use bifrost_llm::{AnthropicProvider, LlmProvider, OllamaProvider};
+
+    let truthy = |v: String| matches!(v.as_str(), "1" | "true" | "yes");
+    let live = std::env::var("BIFROST_CONVERT_LIVE")
+        .map(truthy)
+        .unwrap_or(false);
+    let air_gap = live
+        && std::env::var("BIFROST_AIR_GAP")
+            .map(truthy)
+            .unwrap_or(false);
+
+    // Real providers, included only in live mode and when explicitly configured
+    // (Ollama's `from_env` defaults its URL, so gate it on the var being set).
+    let anthropic = (live && !air_gap && std::env::var("ANTHROPIC_API_KEY").is_ok())
+        .then(AnthropicProvider::from_env)
+        .and_then(Result::ok);
+    let ollama = (live && (air_gap || std::env::var("OLLAMA_BASE_URL").is_ok()))
+        .then(OllamaProvider::from_env);
+    let mock_llm = MockLlmProvider;
+
+    let live_llm = anthropic.is_some() || ollama.is_some();
+    let mut providers: Vec<&dyn LlmProvider> = Vec::new();
+    if let Some(a) = anthropic.as_ref() {
+        providers.push(a);
+    }
+    if let Some(o) = ollama.as_ref() {
+        providers.push(o);
+    }
+    let policy = if live_llm {
+        RoutingPolicy::from_env()
+    } else {
+        providers.push(&mock_llm);
+        RoutingPolicy {
+            bulk: vec!["mock".into()],
+            hard: vec!["mock".into()],
+            docs: vec!["mock".into()],
+        }
     };
-    let router = LlmRouter::new(vec![&provider], /* air_gap */ false).with_policy(policy);
+    let router = LlmRouter::new(providers, air_gap).with_policy(policy);
+
+    // Real Importer when live + a project + ADO org are configured; else the mock.
+    let docker = live
+        .then(|| std::env::var("BIFROST_PROJECT").ok())
+        .flatten()
+        .and_then(|p| DockerImporter::from_env(p).ok());
+    let mock_importer = MockImporter;
+    let importer: &dyn Importer = match docker.as_ref() {
+        Some(d) => d,
+        None => &mock_importer,
+    };
+
+    tracing::info!(
+        importer = if docker.is_some() { "docker" } else { "mock" },
+        llm = if live_llm { "live" } else { "mock" },
+        air_gap,
+        "converting pipeline '{pipeline_id}'"
+    );
 
     convert_pipeline(
-        &importer,
+        importer,
         &router,
         pipeline_id,
-        &format!("prop-{pipeline_id}"),
+        &proposal_id_for(pipeline_id),
         Classification::Yaml,
         "languages: unknown",
     )
