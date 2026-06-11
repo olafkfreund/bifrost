@@ -2,7 +2,7 @@
 
 # Bifrost
 
-**The bridge between worlds — Azure DevOps → GitHub Actions, at portfolio scale.**
+**The bridge between worlds — Azure DevOps · Jenkins · GitLab → GitHub Actions, at portfolio scale.**
 
 Bifrost is an orchestration + intelligence layer on top of GitHub's official migration CLIs
 (`gh actions-importer`, GEI/`ado2gh`). It turns one-at-a-time, syntactic, CLI-only pipeline

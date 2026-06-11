@@ -23,7 +23,7 @@ export function Header({
           <Logo className="h-7 w-7 text-brand-400" />
           <div className="leading-tight">
             <div className="font-semibold text-ink-100">Bifrost</div>
-            <div className="text-xs text-ink-300">ADO → GitHub Actions migration</div>
+            <div className="text-xs text-ink-300">Azure DevOps · Jenkins · GitLab → GitHub Actions</div>
           </div>
         </div>
 
