@@ -65,6 +65,16 @@ pub struct ChecklistItem {
     pub construct: String,
     /// The Importer's message — the specifics for the reviewer.
     pub detail: String,
+    /// Whether this task must be resolved before the migration can be validated.
+    #[serde(default = "default_true")]
+    pub required: bool,
+    /// Whether a human has marked this task done (#57).
+    #[serde(default)]
+    pub done: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// The ordered checklist of manual tasks for a pipeline.
@@ -96,6 +106,12 @@ impl Runbook {
     /// Items of a single category, in checklist order.
     pub fn of(&self, category: ChecklistCategory) -> impl Iterator<Item = &ChecklistItem> {
         self.items.iter().filter(move |i| i.category == category)
+    }
+
+    /// Number of required tasks not yet marked done. The migration is not
+    /// "done" (cannot be validated) until this is zero (#57).
+    pub fn required_remaining(&self) -> usize {
+        self.items.iter().filter(|i| i.required && !i.done).count()
     }
 }
 
@@ -129,6 +145,8 @@ fn item_for_gap(gap: &Gap) -> Option<ChecklistItem> {
         title: category.title().to_string(),
         construct: gap.construct.clone(),
         detail: gap.detail.clone(),
+        required: true,
+        done: false,
     })
 }
 

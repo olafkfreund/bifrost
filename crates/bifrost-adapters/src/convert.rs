@@ -258,6 +258,8 @@ fn classic_outcome(
                 "Designer-defined pipeline has no YAML source — the Importer cannot convert it; \
                      recreate each task as a GitHub Actions workflow step."
                     .into(),
+            required: true,
+            done: false,
         },
     );
 
