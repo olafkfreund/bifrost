@@ -13,6 +13,7 @@
 //! `BIFROST_IMPORTER_WORKDIR` redirects the work dir off a small tmpfs.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use bifrost_core::{AuditSummary, DryRunResult};
 use tokio::process::Command;
@@ -22,6 +23,9 @@ use crate::importer::{
 };
 
 const DEFAULT_IMAGE: &str = "ghcr.io/actions-importer/cli:latest";
+/// Per-process counter giving each audit a unique work dir, so concurrent
+/// audits (the bulk conversion job) never clobber each other's report.
+static AUDIT_SEQ: AtomicU64 = AtomicU64::new(0);
 /// Hard cap on any single file the Importer writes (1 GiB) — bounds a runaway
 /// log so it can never fill the disk. Real audit reports are far smaller.
 const MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024;
@@ -134,7 +138,12 @@ impl DockerImporter {
         let base = std::env::var("BIFROST_IMPORTER_WORKDIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| std::env::temp_dir());
-        let out_dir = base.join("bifrost-importer-audit");
+        // Unique per call: concurrent audits (the bulk job) mustn't share a dir.
+        let seq = AUDIT_SEQ.fetch_add(1, Ordering::Relaxed);
+        let out_dir = base.join(format!(
+            "bifrost-importer-audit-{}-{seq}",
+            std::process::id()
+        ));
         let _ = tokio::fs::remove_dir_all(&out_dir).await; // works now (host-owned)
         tokio::fs::create_dir_all(&out_dir)
             .await
