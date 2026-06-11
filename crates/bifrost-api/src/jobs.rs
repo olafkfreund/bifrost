@@ -111,18 +111,19 @@ impl JobState {
 /// out of scope here — the proposals they produce are persisted by the store).
 pub type JobRegistry = RwLock<HashMap<String, Arc<JobState>>>;
 
-/// Spawn a conversion job over `pipeline_ids`, returning its shared state. The
-/// work runs on a background task; callers register the returned state and stream
-/// its events.
+/// Spawn a conversion job over `(pipeline_id, project)` pairs, returning its
+/// shared state. `project` is the pipeline's ADO project (for the live Docker
+/// importer; `None` falls back to `BIFROST_PROJECT`/mock). The work runs on a
+/// background task; callers register the returned state and stream its events.
 pub fn spawn_convert_job(
     job_id: String,
     store: Arc<dyn ProposalStore>,
-    pipeline_ids: Vec<String>,
+    pipelines: Vec<(String, Option<String>)>,
 ) -> Arc<JobState> {
     let (tx, _) = broadcast::channel(EVENT_CAP);
     let job = Arc::new(JobState {
         id: job_id,
-        total: pipeline_ids.len(),
+        total: pipelines.len(),
         tx,
         snap: Mutex::new(Snapshot {
             done: 0,
@@ -143,14 +144,14 @@ pub fn spawn_convert_job(
 
         let sem = Arc::new(Semaphore::new(CONCURRENCY));
         let mut set = JoinSet::new();
-        for pid in pipeline_ids {
+        for (pid, project) in pipelines {
             // Acquire before spawning so at most CONCURRENCY tasks run at once.
             let permit = sem.clone().acquire_owned().await.expect("semaphore open");
             let store = store.clone();
             let job = run.clone();
             set.spawn(async move {
                 let _permit = permit;
-                let item = convert_one(store.as_ref(), &pid).await;
+                let item = convert_one(store.as_ref(), &pid, project.as_deref()).await;
                 job.emit_item(item).await;
             });
         }
@@ -162,7 +163,11 @@ pub fn spawn_convert_job(
 }
 
 /// Convert a single pipeline, skipping it if already in the store (resumability).
-async fn convert_one(store: &dyn ProposalStore, pipeline_id: &str) -> JobItem {
+async fn convert_one(
+    store: &dyn ProposalStore,
+    pipeline_id: &str,
+    project: Option<&str>,
+) -> JobItem {
     let proposal_id = proposal_id_for(pipeline_id);
     if matches!(store.get(&proposal_id).await, Ok(Some(_))) {
         return JobItem {
@@ -172,9 +177,7 @@ async fn convert_one(store: &dyn ProposalStore, pipeline_id: &str) -> JobItem {
             error: None,
         };
     }
-    // Bulk job uses the BIFROST_PROJECT / mock fallback; per-project live bulk
-    // conversion is a follow-up (single "Open proposal" is project-aware).
-    match crate::run_conversion(pipeline_id, None).await {
+    match crate::run_conversion(pipeline_id, project).await {
         Ok(outcome) => {
             let rec = StoredProposal {
                 proposal: outcome.proposal,
@@ -224,7 +227,10 @@ mod tests {
     #[tokio::test]
     async fn job_converts_all_pipelines_and_reports_done() {
         let store: Arc<dyn ProposalStore> = Arc::new(InMemoryStore::default());
-        let ids = vec!["web-portal-ci".to_string(), "payments-api-ci".to_string()];
+        let ids = vec![
+            ("web-portal-ci".to_string(), None),
+            ("payments-api-ci".to_string(), None),
+        ];
         let job = spawn_convert_job("job-1".into(), store.clone(), ids);
         wait_finished(&job).await;
 
@@ -240,11 +246,12 @@ mod tests {
     #[tokio::test]
     async fn job_skips_already_converted_pipelines() {
         let store: Arc<dyn ProposalStore> = Arc::new(InMemoryStore::default());
-        let job = spawn_convert_job("job-1".into(), store.clone(), vec!["web-portal-ci".into()]);
+        let one = vec![("web-portal-ci".to_string(), None)];
+        let job = spawn_convert_job("job-1".into(), store.clone(), one.clone());
         wait_finished(&job).await;
 
         // Second run over the same pipeline skips it (resumability).
-        let job2 = spawn_convert_job("job-2".into(), store.clone(), vec!["web-portal-ci".into()]);
+        let job2 = spawn_convert_job("job-2".into(), store.clone(), one);
         wait_finished(&job2).await;
         assert_eq!(job2.snapshot().await["items"][0]["skipped"], true);
     }
