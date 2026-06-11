@@ -67,13 +67,15 @@ rendered on the [docs site](https://bitfrost.freundcloud.com/).
 | **M2** Conversion + LLM | dry-run wrapping, gap detection, LLM layer, risk model | Done |
 | **M3** Review Portal | Three-pane diff, approve/edit, proposal lifecycle | Done |
 | **M4** Commit + PR | Push/migrate, manual-task checklists, PR automation | Done |
-| **M5** Validation | Sandbox trigger + run capture + parity diff | In progress |
-| **M6** Compliance + Deploy | Attestation export, auth, multi-tenant, Helm | Planned |
+| **M5** Validation | Sandbox trigger + run capture + parity diff | Done |
+| **M6** Compliance + Deploy | Attestation, audit pack, App auth, packaging done; SSO + multi-tenancy underway | In progress |
 
-The end-to-end loop already works against live Azure DevOps projects: audit a portfolio,
-convert a pipeline (real Importer dry-run + grounded LLM gap-fill, air-gap capable), review
-and approve in the portal, open a PR, then trigger the converted workflow in a sandbox,
-capture its run, and diff it against the ADO baseline for smoke parity.
+The end-to-end loop works against live Azure DevOps projects: audit a portfolio, convert a
+pipeline (real Importer dry-run + grounded LLM gap-fill, air-gap capable), review and approve in
+the portal, open a PR, trigger the converted workflow in a sandbox, capture its run, and diff it
+against the ADO baseline for smoke parity — then export a **signed, in-toto-inspired attestation**
+and a per-org **audit pack**. Deployable via [Docker Compose or Helm](deploy/), authenticating to
+GitHub with a least-privilege **GitHub App**.
 
 ## Getting started (contributors)
 

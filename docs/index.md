@@ -67,9 +67,9 @@ human review. Nothing reaches production without a person approving it.
 
 ## Where it is
 
-Bifrost ships in seven milestones. The full conversion loop already runs against live Azure
-DevOps projects — **M2 (Conversion + LLM)**, **M3 (Review Portal)**, and **M4 (Commit + PR)**
-are complete, and **M5 (Validation)** is underway:
+Bifrost ships in seven milestones. The full conversion loop runs against live Azure DevOps
+projects, and validation, attestation, and deployment are in place — **M2–M5** are complete and
+**M6 (Compliance + Deploy)** is well underway:
 
 | Milestone | Status |
 |---|---|
@@ -78,12 +78,14 @@ are complete, and **M5 (Validation)** is underway:
 | **M2** Conversion + LLM — gap detection, LLM layer, risk model | Done |
 | **M3** Review Portal — three-pane diff, approve/edit, lifecycle | Done |
 | **M4** Commit + PR — push/migrate, runbooks, PR automation | Done |
-| **M5** Validation — sandbox trigger, run capture, parity diff | In progress |
-| **M6** Compliance + Deploy — attestation, auth, multi-tenant, Helm | Planned |
+| **M5** Validation — sandbox trigger, run capture, parity diff | Done |
+| **M6** Compliance + Deploy — attestation, audit pack, App auth, packaging done; SSO + multi-tenancy underway | In progress |
 
 Today you can audit a portfolio, convert a pipeline (real Importer dry-run + grounded LLM
-gap-fill, air-gap capable), review and approve it in the portal, open a PR, then trigger the
-converted workflow in a sandbox, capture its run, and diff it against the ADO baseline.
+gap-fill, air-gap capable), review and approve it in the portal, open a PR, trigger the converted
+workflow in a sandbox, diff its run against the ADO baseline, and export a **signed attestation**
+and a per-org **audit pack** — all deployable via Docker Compose or Helm, authenticating to GitHub
+with a least-privilege App.
 
 [See the full roadmap](roadmap){: .btn .btn-outline }
 
