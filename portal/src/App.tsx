@@ -58,7 +58,12 @@ export default function App() {
           <div className="animate-pulse">Loading portfolio…</div>
         </div>
       ) : page === 'review' ? (
-        <ReviewQueue pipelines={portfolio.pipelines} onSelect={setProposalFor} />
+        <ReviewQueue
+          pipelines={portfolio.pipelines}
+          api={api}
+          onSelect={setProposalFor}
+          onRefresh={() => api.getPortfolio().then(setPortfolio).catch((e) => setError(String(e)))}
+        />
       ) : (
         <main className="mx-auto w-full max-w-7xl flex-1 px-6 py-6">
           <div className="mb-5 flex flex-wrap items-end justify-between gap-3">

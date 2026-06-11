@@ -1,4 +1,11 @@
-import type { AuditEvent, ConversionResult, Portfolio, ProposalStatus } from '../types'
+import type {
+  AuditEvent,
+  ConversionResult,
+  JobProgress,
+  Pipeline,
+  Portfolio,
+  ProposalStatus,
+} from '../types'
 import { mockPortfolio } from '../data/portfolio'
 
 // The portal depends only on this interface. Today it's backed by mock fixtures;
@@ -11,6 +18,10 @@ export interface BifrostApi {
   transitionProposal(proposalId: string, to: ProposalStatus, actor?: string): Promise<ConversionResult>
   /** Replace a proposal's workflow with a reviewer edit (audit-logged). */
   editProposal(proposalId: string, proposedYaml: string, actor?: string): Promise<ConversionResult>
+  /** Start a conversion job; omit `pipelineIds` to convert every not-started pipeline. */
+  startConvertJob(pipelineIds?: string[]): Promise<{ jobId: string; total: number }>
+  /** Subscribe to a job's live progress. Returns an unsubscribe function. */
+  subscribeJob(jobId: string, onUpdate: (progress: JobProgress) => void): () => void
 }
 
 /** Legal lifecycle edges — mirrors `is_legal_transition` in bifrost-core. */
@@ -93,11 +104,27 @@ class MockBifrostApi implements BifrostApi {
   // Keep converted proposals in memory so transitions/edits persist across
   // re-opens within a session — the same behaviour the server's store gives.
   private readonly store = new Map<string, ConversionResult>()
+  private readonly jobs = new Map<string, { targets: string[]; progress: JobProgress }>()
+  private jobCounter = 0
+
+  /** Overlay a stored proposal's status + last actor onto a pipeline (mirrors
+   * the server's /portfolio enrichment) so converting updates the queue. */
+  private overlay(p: Pipeline): Pipeline {
+    const rec = this.store.get(`prop-${p.id}`)
+    if (!rec) return p
+    const last = rec.audit[rec.audit.length - 1]
+    return {
+      ...p,
+      status: rec.proposal.status,
+      reviewer: last?.actor ?? p.reviewer,
+      reviewedAt: last?.at ?? p.reviewedAt,
+    }
+  }
 
   async getPortfolio(): Promise<Portfolio> {
     // Simulate a little latency so loading states are exercised.
     await new Promise((r) => setTimeout(r, 350))
-    return mockPortfolio
+    return { ...mockPortfolio, pipelines: mockPortfolio.pipelines.map((p) => this.overlay(p)) }
   }
 
   async convertPipeline(id: string): Promise<ConversionResult> {
@@ -142,6 +169,48 @@ class MockBifrostApi implements BifrostApi {
     this.log(rec, status, status, actor, 'edited proposed_yaml')
     return structuredClone(rec)
   }
+
+  async startConvertJob(pipelineIds?: string[]): Promise<{ jobId: string; total: number }> {
+    const targets =
+      pipelineIds ??
+      mockPortfolio.pipelines.filter((p) => this.overlay(p).status === 'not_started').map((p) => p.id)
+    const jobId = `mock-job-${++this.jobCounter}`
+    this.jobs.set(jobId, {
+      targets,
+      progress: { jobId, total: targets.length, done: 0, finished: false, items: [] },
+    })
+    return { jobId, total: targets.length }
+  }
+
+  subscribeJob(jobId: string, onUpdate: (progress: JobProgress) => void): () => void {
+    const job = this.jobs.get(jobId)
+    if (!job) return () => {}
+    let cancelled = false
+    let i = 0
+
+    const emit = () => onUpdate(structuredClone(job.progress))
+    const tick = async () => {
+      if (cancelled) return
+      if (i >= job.targets.length) {
+        job.progress.finished = true
+        emit()
+        return
+      }
+      const pid = job.targets[i++]
+      const already = this.store.has(`prop-${pid}`)
+      await this.convertPipeline(pid) // populates the store
+      job.progress.done++
+      job.progress.items.push({ pipelineId: pid, ok: true, skipped: already })
+      emit()
+      setTimeout(tick, 220)
+    }
+
+    emit() // initial snapshot
+    setTimeout(tick, 120)
+    return () => {
+      cancelled = true
+    }
+  }
 }
 
 class HttpBifrostApi implements BifrostApi {
@@ -182,6 +251,50 @@ class HttpBifrostApi implements BifrostApi {
     })
     if (!res.ok) throw new Error(`${res.status}: ${(await res.text()) || 'edit failed'}`)
     return (await res.json()) as ConversionResult
+  }
+
+  async startConvertJob(pipelineIds?: string[]): Promise<{ jobId: string; total: number }> {
+    const res = await fetch(`${this.base}/jobs/convert`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(pipelineIds ? { pipelineIds } : {}),
+    })
+    if (!res.ok) throw new Error(`start job failed: ${res.status}`)
+    return (await res.json()) as { jobId: string; total: number }
+  }
+
+  subscribeJob(jobId: string, onUpdate: (progress: JobProgress) => void): () => void {
+    const es = new EventSource(`${this.base}/jobs/${encodeURIComponent(jobId)}/events`)
+    // Merge the SSE events (a `snapshot` event, then `item`/`done` messages) into
+    // one running JobProgress.
+    const progress: JobProgress = { jobId, total: 0, done: 0, finished: false, items: [] }
+
+    es.addEventListener('snapshot', (e) => {
+      const s = JSON.parse((e as MessageEvent).data)
+      progress.total = s.total ?? progress.total
+      progress.done = s.done ?? progress.done
+      progress.finished = !!s.finished
+      progress.items = s.items ?? progress.items
+      onUpdate({ ...progress })
+      if (progress.finished) es.close()
+    })
+
+    es.onmessage = (e) => {
+      const ev = JSON.parse(e.data)
+      progress.total = ev.total ?? progress.total
+      progress.done = ev.done ?? progress.done
+      if (ev.item) progress.items = [...progress.items, ev.item]
+      if (ev.kind === 'done') progress.finished = true
+      onUpdate({ ...progress })
+      if (progress.finished) es.close()
+    }
+
+    es.onerror = () => {
+      // After a clean finish we've already closed; otherwise let EventSource retry.
+      if (progress.finished) es.close()
+    }
+
+    return () => es.close()
   }
 }
 
