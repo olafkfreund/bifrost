@@ -25,10 +25,11 @@ use axum::{
     Json, Router,
 };
 use bifrost_adapters::{
-    convert_pipeline, declared_outputs, AzureDevOpsBaseline, BaselineRequest, BaselineSource,
-    CommitRequest, ConversionOutcome, GitHubPublisher, GitHubRunCollector, GitHubSandboxTrigger,
-    MockBaselineSource, MockImporter, MockPublisher, MockRunCollector, MockSandboxTrigger,
-    Publisher, RunCollector, RunQuery, SandboxTrigger, TriggerRequest,
+    convert_pipeline, declared_outputs, github_token_from_env, AzureDevOpsBaseline,
+    BaselineRequest, BaselineSource, CommitRequest, ConversionOutcome, GitHubPublisher,
+    GitHubRunCollector, GitHubSandboxTrigger, MockBaselineSource, MockImporter, MockPublisher,
+    MockRunCollector, MockSandboxTrigger, Publisher, RunCollector, RunQuery, SandboxTrigger,
+    TriggerRequest,
 };
 use bifrost_core::{
     compare_parity, Attestation, AuditLog, AuditPack, Classification, MigrationAttestation,
@@ -280,20 +281,46 @@ fn pr_body(rec: &StoredProposal) -> String {
     s
 }
 
-/// The publisher for the commit path: the real GitHub one when the live commit
-/// path is explicitly enabled and configured, else the offline mock (never a
-/// silent write to a customer repo).
-fn select_publisher() -> Box<dyn Publisher> {
-    let live = std::env::var("BIFROST_COMMIT_LIVE")
+/// Whether a live-path env flag is enabled.
+fn live_enabled(var: &str) -> bool {
+    std::env::var(var)
         .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
-        .unwrap_or(false);
-    if live {
-        match GitHubPublisher::from_env() {
-            Ok(p) => return Box::new(p),
-            Err(e) => {
-                tracing::warn!("BIFROST_COMMIT_LIVE set but publisher unavailable: {e}; using mock")
-            }
+        .unwrap_or(false)
+}
+
+/// Resolve a GitHub token for a live path, gated on `live_var`. Prefers a GitHub
+/// App installation token (least privilege, #64) when `GITHUB_APP_*` is set, else
+/// `GITHUB_TOKEN`. `None` (with a warning) means stay on the mock — a live GitHub
+/// call never fires without real auth.
+async fn github_token(live_var: &str) -> Option<String> {
+    if !live_enabled(live_var) {
+        return None;
+    }
+    match github_token_from_env().await {
+        Ok(Some(t)) => Some(t),
+        Ok(None) => {
+            tracing::warn!(
+                "{live_var} set but no GitHub auth (GITHUB_APP_* or GITHUB_TOKEN); using mock"
+            );
+            None
         }
+        Err(e) => {
+            tracing::warn!("{live_var} set but GitHub auth failed: {e}; using mock");
+            None
+        }
+    }
+}
+
+/// The publisher for the commit path: the real GitHub one when the live commit
+/// path is explicitly enabled and authenticated, else the offline mock (never a
+/// silent write to a customer repo).
+async fn select_publisher() -> Box<dyn Publisher> {
+    if let Some(token) = github_token("BIFROST_COMMIT_LIVE").await {
+        let mut p = GitHubPublisher::new(token);
+        if let Ok(base) = std::env::var("GITHUB_API_BASE") {
+            p = p.with_api_base(base);
+        }
+        return Box::new(p);
     }
     Box::new(MockPublisher)
 }
@@ -335,6 +362,7 @@ async fn commit(
     };
 
     let result = select_publisher()
+        .await
         .commit_workflow(&request)
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
@@ -359,18 +387,14 @@ async fn commit(
 }
 
 /// The sandbox trigger: real GitHub `workflow_dispatch` when the live validation
-/// path is enabled + configured, else the mock (never a silent CI run).
-fn select_trigger() -> Box<dyn SandboxTrigger> {
-    let live = std::env::var("BIFROST_VALIDATE_LIVE")
-        .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
-        .unwrap_or(false);
-    if live {
-        match GitHubSandboxTrigger::from_env() {
-            Ok(t) => return Box::new(t),
-            Err(e) => {
-                tracing::warn!("BIFROST_VALIDATE_LIVE set but trigger unavailable: {e}; using mock")
-            }
+/// path is enabled + authenticated, else the mock (never a silent CI run).
+async fn select_trigger() -> Box<dyn SandboxTrigger> {
+    if let Some(token) = github_token("BIFROST_VALIDATE_LIVE").await {
+        let mut t = GitHubSandboxTrigger::new(token);
+        if let Ok(base) = std::env::var("GITHUB_API_BASE") {
+            t = t.with_api_base(base);
         }
+        return Box::new(t);
     }
     Box::new(MockSandboxTrigger)
 }
@@ -407,6 +431,7 @@ async fn validate(
         git_ref: format!("bifrost/convert-{slug}"),
     };
     let result = select_trigger()
+        .await
         .trigger(&request)
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
@@ -423,20 +448,14 @@ async fn validate(
 }
 
 /// The run collector: reads the real GitHub Actions run when the live validation
-/// path is enabled + configured, else the mock (never a silent external call).
-fn select_collector() -> Box<dyn RunCollector> {
-    let live = std::env::var("BIFROST_VALIDATE_LIVE")
-        .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
-        .unwrap_or(false);
-    if live {
-        match GitHubRunCollector::from_env() {
-            Ok(c) => return Box::new(c),
-            Err(e) => {
-                tracing::warn!(
-                    "BIFROST_VALIDATE_LIVE set but collector unavailable: {e}; using mock"
-                )
-            }
+/// path is enabled + authenticated, else the mock (never a silent external call).
+async fn select_collector() -> Box<dyn RunCollector> {
+    if let Some(token) = github_token("BIFROST_VALIDATE_LIVE").await {
+        let mut c = GitHubRunCollector::new(token);
+        if let Ok(base) = std::env::var("GITHUB_API_BASE") {
+            c = c.with_api_base(base);
         }
+        return Box::new(c);
     }
     Box::new(MockRunCollector)
 }
@@ -473,6 +492,7 @@ async fn run_result(
         git_ref: format!("bifrost/convert-{slug}"),
     };
     let run = select_collector()
+        .await
         .collect(&query)
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
@@ -542,6 +562,7 @@ async fn compute_parity(
         git_ref: format!("bifrost/convert-{slug}"),
     };
     let run = select_collector()
+        .await
         .collect(&query)
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
