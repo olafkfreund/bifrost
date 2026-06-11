@@ -10,6 +10,7 @@ import { ProposalPanel } from './components/ProposalPanel'
 import { DocsPage } from './components/DocsPage'
 import { ReviewQueue } from './components/ReviewQueue'
 import { Connections } from './components/Connections'
+import { OnboardingWizard } from './components/OnboardingWizard'
 import { riskMeta } from './lib/format'
 import { useTheme } from './lib/theme'
 
@@ -28,6 +29,7 @@ export default function App() {
   const [filter, setFilter] = useState<Filter>('all')
   const [orgFilter, setOrgFilter] = useState<string>('all')
   const [page, setPage] = useState<Page>('portfolio')
+  const [showWizard, setShowWizard] = useState(() => !localStorage.getItem('bifrost_onboarded'))
   const [theme, toggleTheme] = useTheme()
 
   useEffect(() => {
@@ -152,7 +154,22 @@ export default function App() {
       <footer className="border-t border-ink-800 px-6 py-3 text-center text-xs text-ink-500">
         Risk is computed deterministically from the Importer audit + source inventory. Bifrost
         wraps the official GitHub migration tools; it never reimplements their conversion logic.
+        {' · '}
+        <button onClick={() => setShowWizard(true)} className="underline hover:text-ink-300">
+          Run setup
+        </button>
       </footer>
+
+      {showWizard && (
+        <OnboardingWizard
+          api={api}
+          onClose={() => setShowWizard(false)}
+          onGoConnections={() => {
+            setPage('connections')
+            setShowWizard(false)
+          }}
+        />
+      )}
 
       <PipelineDrawer
         pipeline={selected}
