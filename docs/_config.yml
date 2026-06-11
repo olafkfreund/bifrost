@@ -1,7 +1,7 @@
 title: Bifrost
 description: >-
-  The bridge between worlds — Azure DevOps → GitHub Actions migration at
-  portfolio scale, semantically reviewed, human-approved, air-gap capable.
+  The bridge between worlds — Azure DevOps, Jenkins and GitLab → GitHub Actions
+  migration at portfolio scale, semantically reviewed, human-approved, air-gap capable.
 remote_theme: just-the-docs/just-the-docs
 url: https://bitfrost.freundcloud.com
 baseurl: ""
