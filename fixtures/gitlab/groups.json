@@ -1,0 +1,4 @@
+[
+  { "id": 1, "name": "storefront", "full_path": "storefront" },
+  { "id": 2, "name": "platform", "full_path": "platform" }
+]

@@ -1,0 +1,29 @@
+[
+  {
+    "id": 101,
+    "name": "web-portal",
+    "path_with_namespace": "storefront/web-portal",
+    "default_branch": "main",
+    "auto_devops_enabled": false,
+    "ci_config_path": "",
+    "namespace": { "name": "storefront", "full_path": "storefront" }
+  },
+  {
+    "id": 102,
+    "name": "payments-svc",
+    "path_with_namespace": "storefront/payments-svc",
+    "default_branch": "main",
+    "auto_devops_enabled": true,
+    "ci_config_path": "",
+    "namespace": { "name": "storefront", "full_path": "storefront" }
+  },
+  {
+    "id": 201,
+    "name": "infra-terraform",
+    "path_with_namespace": "platform/infra-terraform",
+    "default_branch": "main",
+    "auto_devops_enabled": false,
+    "ci_config_path": ".gitlab-ci.yml",
+    "namespace": { "name": "platform", "full_path": "platform" }
+  }
+]
