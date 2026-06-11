@@ -45,6 +45,12 @@ pub struct DryRunResult {
     /// decoding.
     #[serde(default)]
     pub converted_yaml: String,
+    /// The source pipeline definition the Importer converted (e.g. the ADO
+    /// `azure-pipelines.yml`) — the left-hand side of the review diff. Comes
+    /// from the `SourceAdapter`, not the Importer log, so it is `#[serde(default)]`
+    /// and empty when only the log was parsed.
+    #[serde(default)]
+    pub source_yaml: String,
 }
 
 impl DryRunResult {

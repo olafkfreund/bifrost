@@ -125,7 +125,7 @@ export default function App() {
           setProposalFor(p)
         }}
       />
-      <ProposalPanel pipeline={proposalFor} api={api} onClose={() => setProposalFor(null)} />
+      <ProposalPanel pipeline={proposalFor} api={api} theme={theme} onClose={() => setProposalFor(null)} />
     </div>
   )
 }

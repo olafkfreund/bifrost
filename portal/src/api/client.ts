@@ -17,6 +17,7 @@ function mockConversion(id: string): ConversionResult {
     proposal: {
       id: `prop-${id}`,
       pipelineId: id,
+      sourceYaml: `trigger:\n  branches:\n    include:\n      - main\n\npool:\n  vmImage: ubuntu-latest\n\nstrategy:\n  matrix:\n    linux:\n      imageName: ubuntu-latest\n    windows:\n      imageName: windows-latest\n\nsteps:\n  - checkout: self\n\n  - task: DownloadSecureFile@1\n    name: signingCert\n    inputs:\n      secureFile: code-signing.pfx\n\n  - script: dotnet build --configuration Release\n    displayName: Build\n\n  - task: acme-corp.deploy.DeployTask@2\n    displayName: Deploy to prod\n    inputs:\n      connectedServiceName: azure-prod\n      environment: pre-deploy\n      clientSecret: $(AZURE_CLIENT_SECRET)`,
       proposedYaml: `name: ${name}\non:\n  push:\n    branches: [ main ]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: Build\n        run: echo "Importer-converted baseline step"\n\n# ──────────────────────────────────────────────────────────────────────\n# bifrost: gap-fills below — REVIEW BEFORE USE\n# ──────────────────────────────────────────────────────────────────────\n\n# bifrost-gap-fill: DownloadSecureFile@1 (prompt: gap-fill.v1)\n# gap fill for DownloadSecureFile@1`,
       rationale:
         'DownloadSecureFile@1: replaced the secure-file download with an OIDC-authenticated fetch from the platform secret store.',

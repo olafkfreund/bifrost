@@ -101,6 +101,8 @@ export interface Runbook {
 export interface Proposal {
   id: string
   pipelineId: string
+  /** Source ADO pipeline definition — the left-hand side of the review diff. */
+  sourceYaml: string
   proposedYaml: string
   rationale: string
   riskFlags: string[]
