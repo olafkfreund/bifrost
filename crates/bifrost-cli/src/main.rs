@@ -95,11 +95,13 @@ async fn audit_json(project: &str) -> Result<()> {
         .version()
         .await
         .unwrap_or_else(|_| "unknown".into());
+    let importer_image_digest = importer.image_digest().await.unwrap_or_default();
 
     let org = std::env::var("AZDO_ORG_URL").unwrap_or_default();
     let config = AuditConfig {
         org: org.rsplit('/').next().unwrap_or("unknown").to_string(),
         importer_version: version,
+        importer_image_digest,
         ado2gh_version: "n/a".into(),
         air_gap: false,
         generated_at: now_iso8601(),

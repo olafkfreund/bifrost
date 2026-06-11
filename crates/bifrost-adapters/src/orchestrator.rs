@@ -18,6 +18,8 @@ use crate::source::{AdapterError, SourceAdapter};
 pub struct AuditConfig {
     pub org: String,
     pub importer_version: String,
+    /// Immutable Importer image digest (`repo@sha256:…`) for this run (#30).
+    pub importer_image_digest: String,
     pub ado2gh_version: String,
     pub air_gap: bool,
     /// Timestamp for the run (passed in — the core stays clock-free/deterministic).
@@ -72,6 +74,7 @@ pub async fn audit_org(
         summary: PortfolioSummary {
             org: config.org,
             importer_version: config.importer_version,
+            importer_image_digest: config.importer_image_digest,
             ado2gh_version: config.ado2gh_version,
             air_gap: config.air_gap,
             generated_at: config.generated_at,
@@ -149,6 +152,7 @@ pub async fn audit_portfolio(
         summary: PortfolioSummary {
             org: config.org,
             importer_version: config.importer_version,
+            importer_image_digest: config.importer_image_digest,
             ado2gh_version: config.ado2gh_version,
             air_gap: config.air_gap,
             generated_at: config.generated_at,
@@ -169,6 +173,7 @@ mod tests {
         AuditConfig {
             org: "contoso".into(),
             importer_version: "mock".into(),
+            importer_image_digest: "sha256:test".into(),
             ado2gh_version: "mock".into(),
             air_gap: true,
             generated_at: "2026-06-10T00:00:00Z".into(),
@@ -219,6 +224,15 @@ mod tests {
             .unwrap();
         let t = &portfolio.summary.totals;
         assert_eq!(t.green + t.amber + t.red, t.pipelines);
+    }
+
+    #[tokio::test]
+    async fn provenance_digest_flows_into_the_summary() {
+        let portfolio = audit_org(&MockSourceAdapter::new(), &MockImporter, config())
+            .await
+            .unwrap();
+        // The pinned image digest is recorded for attestation (#30).
+        assert_eq!(portfolio.summary.importer_image_digest, "sha256:test");
     }
 
     #[tokio::test]

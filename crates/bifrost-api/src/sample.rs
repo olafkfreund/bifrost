@@ -286,6 +286,7 @@ pub fn portfolio() -> Portfolio {
         summary: PortfolioSummary {
             org: "contoso".into(),
             importer_version: "1.3.21847".into(),
+            importer_image_digest: "ghcr.io/actions-importer/cli@sha256:sample".into(),
             ado2gh_version: "1.10.0".into(),
             air_gap: true,
             generated_at: "2026-06-10T09:14:00Z".into(),
