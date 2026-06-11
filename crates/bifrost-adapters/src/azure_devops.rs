@@ -320,13 +320,20 @@ mod tests {
     }
 
     /// Live smoke test against a real org. Skipped by default; run with creds via
-    /// `AZDO_ORG_URL`/`AZDO_PAT` set and `cargo test -- --ignored`.
+    /// `AZDO_ORG_URL`/`AZDO_PAT` set and `cargo test -- --ignored`. Targets
+    /// `BIFROST_TEST_PROJECT` (default `SARC`) so any seeded project can be checked.
     #[tokio::test]
     #[ignore = "requires live ADO credentials"]
     async fn live_discover_and_enumerate() {
-        let adapter = AzureDevOpsAdapter::from_env("SARC").expect("AZDO_* env set");
+        let project = std::env::var("BIFROST_TEST_PROJECT").unwrap_or_else(|_| "SARC".into());
+        let adapter = AzureDevOpsAdapter::from_env(&project).expect("AZDO_* env set");
         assert!(!adapter.discover().await.unwrap().is_empty());
         let pipelines = adapter.enumerate_pipelines().await.unwrap();
+        eprintln!("{project}: {} pipelines", pipelines.len());
+        for p in &pipelines {
+            eprintln!("  - {} [{:?}]", p.name, p.classification);
+        }
+        assert!(!pipelines.is_empty(), "{project} has pipelines");
         assert!(pipelines.iter().all(|p| !p.name.is_empty()));
     }
 }
