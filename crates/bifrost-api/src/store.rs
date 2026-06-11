@@ -1,0 +1,325 @@
+//! Proposal persistence.
+//!
+//! A [`ProposalStore`] trait with two implementations: an in-memory store
+//! (default, zero-config — used for tests and ephemeral runs) and a SQLite store
+//! (air-gap / single-tenant, #46) selected by `BIFROST_DB`. Postgres
+//! (server/multi-tenant, #45) slots in behind the same trait.
+//!
+//! Storage shape: the proposal body is a JSON document in `proposals`, while the
+//! audit trail is a separate **append-only** table (`audit_log`) — rows are only
+//! ever inserted, never updated or deleted, which is what makes it the
+//! attestation artifact (#48).
+
+use std::collections::HashMap;
+use std::str::FromStr;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use bifrost_core::{AuditEvent, AuditLog, Proposal, ProposalStatus, Runbook};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::{Row, SqlitePool};
+use tokio::sync::RwLock;
+
+/// A converted proposal plus its append-only audit trail.
+#[derive(Debug, Clone)]
+pub struct StoredProposal {
+    pub proposal: Proposal,
+    pub runbook: Runbook,
+    pub audit: AuditLog,
+}
+
+#[async_trait]
+pub trait ProposalStore: Send + Sync {
+    /// Load a proposal (with its full audit trail) by id.
+    async fn get(&self, id: &str) -> anyhow::Result<Option<StoredProposal>>;
+    /// Upsert the proposal body and append any audit events not yet persisted.
+    async fn put(&self, rec: &StoredProposal) -> anyhow::Result<()>;
+    /// Every stored proposal (for the portfolio review-state overlay).
+    async fn list(&self) -> anyhow::Result<Vec<StoredProposal>>;
+}
+
+/// Resolve the store from the environment: `BIFROST_DB` (a SQLite URL/path) →
+/// persisted; unset → in-memory. A connect failure degrades to in-memory so the
+/// server always starts.
+pub async fn from_env() -> Arc<dyn ProposalStore> {
+    match std::env::var("BIFROST_DB") {
+        Ok(url) if !url.trim().is_empty() => match SqliteStore::connect(&url).await {
+            Ok(store) => {
+                tracing::info!("proposals persisted to SQLite ({url})");
+                Arc::new(store)
+            }
+            Err(e) => {
+                tracing::warn!("BIFROST_DB connect failed: {e}; using in-memory store");
+                Arc::new(InMemoryStore::default())
+            }
+        },
+        _ => {
+            tracing::info!("proposals held in memory (set BIFROST_DB to persist)");
+            Arc::new(InMemoryStore::default())
+        }
+    }
+}
+
+// ── in-memory ───────────────────────────────────────────────────────────────
+
+/// A non-durable store backed by a map. Default when `BIFROST_DB` is unset.
+#[derive(Default)]
+pub struct InMemoryStore {
+    inner: RwLock<HashMap<String, StoredProposal>>,
+}
+
+#[async_trait]
+impl ProposalStore for InMemoryStore {
+    async fn get(&self, id: &str) -> anyhow::Result<Option<StoredProposal>> {
+        Ok(self.inner.read().await.get(id).cloned())
+    }
+    async fn put(&self, rec: &StoredProposal) -> anyhow::Result<()> {
+        self.inner
+            .write()
+            .await
+            .insert(rec.proposal.id.clone(), rec.clone());
+        Ok(())
+    }
+    async fn list(&self) -> anyhow::Result<Vec<StoredProposal>> {
+        Ok(self.inner.read().await.values().cloned().collect())
+    }
+}
+
+// ── SQLite ────────────────────────────────────────────────────────────────────
+
+/// A SQLite-backed store. The schema is created on connect (idempotent), so no
+/// external migration step is needed for the single-tenant/air-gap deployment.
+pub struct SqliteStore {
+    pool: SqlitePool,
+}
+
+fn status_to_str(s: ProposalStatus) -> String {
+    // ProposalStatus is a serde snake_case enum; serialize to its wire string.
+    serde_json::to_value(s)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
+fn status_from_str(s: &str) -> anyhow::Result<ProposalStatus> {
+    Ok(serde_json::from_value(serde_json::Value::String(s.to_string()))?)
+}
+
+impl SqliteStore {
+    /// Connect (creating the file if missing) and ensure the schema exists.
+    /// Accepts a `sqlite:`/`sqlite://` URL or a bare file path.
+    pub async fn connect(url: &str) -> anyhow::Result<Self> {
+        let normalized = if url.contains(':') {
+            url.to_string()
+        } else {
+            format!("sqlite:{url}")
+        };
+        let opts = SqliteConnectOptions::from_str(&normalized)?.create_if_missing(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(5)
+            .connect_with(opts)
+            .await?;
+        let store = Self { pool };
+        store.migrate().await?;
+        Ok(store)
+    }
+
+    async fn migrate(&self) -> anyhow::Result<()> {
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS proposals (
+                id          TEXT PRIMARY KEY,
+                pipeline_id TEXT NOT NULL,
+                status      TEXT NOT NULL,
+                doc         TEXT NOT NULL,
+                runbook     TEXT NOT NULL
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS audit_log (
+                seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+                proposal_id TEXT NOT NULL,
+                actor       TEXT NOT NULL,
+                from_status TEXT NOT NULL,
+                to_status   TEXT NOT NULL,
+                at          TEXT NOT NULL,
+                note        TEXT
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_audit_proposal ON audit_log(proposal_id, seq)")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn load_audit(&self, id: &str) -> anyhow::Result<AuditLog> {
+        let rows = sqlx::query(
+            "SELECT actor, from_status, to_status, at, note FROM audit_log
+             WHERE proposal_id = ? ORDER BY seq",
+        )
+        .bind(id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut audit = AuditLog::new();
+        for r in rows {
+            audit.append(AuditEvent {
+                proposal_id: id.to_string(),
+                actor: r.get("actor"),
+                from: status_from_str(&r.get::<String, _>("from_status"))?,
+                to: status_from_str(&r.get::<String, _>("to_status"))?,
+                at: r.get("at"),
+                note: r.get::<Option<String>, _>("note"),
+            });
+        }
+        Ok(audit)
+    }
+}
+
+#[async_trait]
+impl ProposalStore for SqliteStore {
+    async fn get(&self, id: &str) -> anyhow::Result<Option<StoredProposal>> {
+        let row = sqlx::query("SELECT doc, runbook FROM proposals WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        let Some(row) = row else { return Ok(None) };
+        let proposal: Proposal = serde_json::from_str(&row.get::<String, _>("doc"))?;
+        let runbook: Runbook = serde_json::from_str(&row.get::<String, _>("runbook"))?;
+        let audit = self.load_audit(id).await?;
+        Ok(Some(StoredProposal {
+            proposal,
+            runbook,
+            audit,
+        }))
+    }
+
+    async fn put(&self, rec: &StoredProposal) -> anyhow::Result<()> {
+        let doc = serde_json::to_string(&rec.proposal)?;
+        let runbook = serde_json::to_string(&rec.runbook)?;
+        sqlx::query(
+            "INSERT INTO proposals (id, pipeline_id, status, doc, runbook) VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+                status = excluded.status, doc = excluded.doc, runbook = excluded.runbook",
+        )
+        .bind(&rec.proposal.id)
+        .bind(&rec.proposal.pipeline_id)
+        .bind(status_to_str(rec.proposal.status))
+        .bind(&doc)
+        .bind(&runbook)
+        .execute(&self.pool)
+        .await?;
+
+        // The audit log is append-only: insert only events not yet persisted.
+        let stored: i64 = sqlx::query("SELECT COUNT(*) AS n FROM audit_log WHERE proposal_id = ?")
+            .bind(&rec.proposal.id)
+            .fetch_one(&self.pool)
+            .await?
+            .get("n");
+        for ev in rec.audit.events().iter().skip(stored as usize) {
+            sqlx::query(
+                "INSERT INTO audit_log (proposal_id, actor, from_status, to_status, at, note)
+                 VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&ev.proposal_id)
+            .bind(&ev.actor)
+            .bind(status_to_str(ev.from))
+            .bind(status_to_str(ev.to))
+            .bind(&ev.at)
+            .bind(ev.note.as_deref())
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(())
+    }
+
+    async fn list(&self) -> anyhow::Result<Vec<StoredProposal>> {
+        let ids = sqlx::query("SELECT id FROM proposals")
+            .fetch_all(&self.pool)
+            .await?;
+        let mut out = Vec::with_capacity(ids.len());
+        for r in ids {
+            if let Some(sp) = self.get(&r.get::<String, _>("id")).await? {
+                out.push(sp);
+            }
+        }
+        Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bifrost_core::{assess, RiskSignals};
+
+    fn sample_proposal(id: &str) -> StoredProposal {
+        let assessment = assess(&RiskSignals::default());
+        let proposal = Proposal::new(
+            id,
+            "web-portal-ci",
+            "trigger: { branches: [main] }",
+            "on: push",
+            "rationale",
+            vec![],
+            vec![],
+            "gap-fill.v1",
+            1.0,
+            &assessment,
+        );
+        StoredProposal {
+            proposal,
+            runbook: Runbook::default(),
+            audit: AuditLog::new(),
+        }
+    }
+
+    async fn temp_store(name: &str) -> SqliteStore {
+        let path = std::env::temp_dir().join(format!("bifrost-store-test-{name}.db"));
+        let _ = std::fs::remove_file(&path);
+        SqliteStore::connect(path.to_str().unwrap()).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn sqlite_round_trips_a_proposal_and_appends_audit() {
+        let store = temp_store("roundtrip").await;
+        let mut rec = sample_proposal("prop-rt");
+
+        store.put(&rec).await.unwrap();
+        let got = store.get("prop-rt").await.unwrap().expect("present");
+        assert_eq!(got.proposal.status, ProposalStatus::Draft);
+        assert!(got.audit.is_empty());
+
+        // Transition + persist: the audit event lands in the append-only table.
+        rec.proposal
+            .transition(ProposalStatus::InReview, "olaf", "t1", &mut rec.audit)
+            .unwrap();
+        store.put(&rec).await.unwrap();
+
+        let got = store.get("prop-rt").await.unwrap().unwrap();
+        assert_eq!(got.proposal.status, ProposalStatus::InReview);
+        assert_eq!(got.audit.len(), 1);
+        assert_eq!(got.audit.events()[0].actor, "olaf");
+
+        // Idempotent re-put does not duplicate the (already-stored) event.
+        store.put(&rec).await.unwrap();
+        assert_eq!(store.get("prop-rt").await.unwrap().unwrap().audit.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn sqlite_persists_across_reconnect() {
+        let path = std::env::temp_dir().join("bifrost-store-test-reconnect.db");
+        let _ = std::fs::remove_file(&path);
+        let url = path.to_str().unwrap();
+
+        {
+            let store = SqliteStore::connect(url).await.unwrap();
+            store.put(&sample_proposal("prop-persist")).await.unwrap();
+        }
+        // A fresh connection to the same file sees the durable proposal.
+        let store = SqliteStore::connect(url).await.unwrap();
+        assert!(store.get("prop-persist").await.unwrap().is_some());
+        assert_eq!(store.list().await.unwrap().len(), 1);
+    }
+}

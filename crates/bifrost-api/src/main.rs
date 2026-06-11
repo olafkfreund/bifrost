@@ -9,6 +9,7 @@
 //! Any failure falls back to the next source, so the server always starts.
 
 mod sample;
+mod store;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -20,7 +21,7 @@ use axum::{
     Json, Router,
 };
 use bifrost_adapters::{convert_pipeline, ConversionOutcome, MockImporter};
-use bifrost_core::{AuditLog, Classification, Portfolio, Proposal, ProposalStatus, Runbook};
+use bifrost_core::{AuditLog, Classification, Portfolio, ProposalStatus};
 use bifrost_llm::{MockLlmProvider, Router as LlmRouter, RoutingPolicy};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -28,21 +29,20 @@ use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
-/// A converted proposal held in the control plane, with its append-only audit
-/// trail. In-memory for now — durable persistence (Postgres/SQLite) is #45/#46.
-struct StoredProposal {
-    proposal: Proposal,
-    runbook: Runbook,
-    audit: AuditLog,
-}
+use store::{ProposalStore, StoredProposal};
 
-/// Shared server state: the portfolio plus the proposal store (keyed by proposal id).
+/// Shared server state: the portfolio plus the proposal store.
 struct AppState {
     portfolio: RwLock<Portfolio>,
-    proposals: RwLock<HashMap<String, StoredProposal>>,
+    store: Arc<dyn ProposalStore>,
 }
 
 type Shared = Arc<AppState>;
+
+/// Map a store/persistence error to a 500 response.
+fn internal(e: anyhow::Error) -> (StatusCode, String) {
+    (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+}
 
 /// The proposal id the conversion loop assigns for a pipeline (see `run_conversion`).
 fn proposal_id_for(pipeline_id: &str) -> String {
@@ -67,13 +67,16 @@ async fn portfolio(State(state): State<Shared>) -> Json<Portfolio> {
     // Overlay live review state so the portal's review queue reflects actions
     // taken this session: a converted pipeline shows its current proposal status,
     // and the latest audit event names who last acted and when.
-    let store = state.proposals.read().await;
-    for p in &mut portfolio.pipelines {
-        if let Some(rec) = store.get(&proposal_id_for(&p.id)) {
-            p.status = rec.proposal.status;
-            if let Some(last) = rec.audit.events().last() {
-                p.reviewer = Some(last.actor.clone());
-                p.reviewed_at = Some(last.at.clone());
+    if let Ok(all) = state.store.list().await {
+        let by_id: HashMap<String, &StoredProposal> =
+            all.iter().map(|r| (r.proposal.id.clone(), r)).collect();
+        for p in &mut portfolio.pipelines {
+            if let Some(rec) = by_id.get(&proposal_id_for(&p.id)) {
+                p.status = rec.proposal.status;
+                if let Some(last) = rec.audit.events().last() {
+                    p.reviewer = Some(last.actor.clone());
+                    p.reviewed_at = Some(last.at.clone());
+                }
             }
         }
     }
@@ -98,8 +101,8 @@ async fn convert(
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let proposal_id = proposal_id_for(&id);
 
-    if let Some(rec) = state.proposals.read().await.get(&proposal_id) {
-        return Ok(Json(record_json(rec)));
+    if let Some(rec) = state.store.get(&proposal_id).await.map_err(internal)? {
+        return Ok(Json(record_json(&rec)));
     }
 
     let outcome = run_conversion(&id)
@@ -110,9 +113,8 @@ async fn convert(
         runbook: outcome.runbook,
         audit: AuditLog::new(),
     };
-    let body = record_json(&rec);
-    state.proposals.write().await.insert(proposal_id, rec);
-    Ok(Json(body))
+    state.store.put(&rec).await.map_err(internal)?;
+    Ok(Json(record_json(&rec)))
 }
 
 /// Body of `POST /api/proposals/:id/transition`: the target lifecycle state and
@@ -133,15 +135,18 @@ async fn transition(
     Path(id): Path<String>,
     Json(body): Json<TransitionBody>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    let mut store = state.proposals.write().await;
-    let rec = store
-        .get_mut(&id)
+    let mut rec = state
+        .store
+        .get(&id)
+        .await
+        .map_err(internal)?
         .ok_or((StatusCode::NOT_FOUND, format!("no proposal '{id}'")))?;
     let actor = body.actor.unwrap_or_else(|| "reviewer@portal".into());
     rec.proposal
         .transition(body.to, actor, now_iso8601(), &mut rec.audit)
         .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
-    Ok(Json(record_json(rec)))
+    state.store.put(&rec).await.map_err(internal)?;
+    Ok(Json(record_json(&rec)))
 }
 
 /// Body of `PATCH /api/proposals/:id`: the reviewer's edited workflow.
@@ -161,15 +166,18 @@ async fn edit(
     Path(id): Path<String>,
     Json(body): Json<EditBody>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    let mut store = state.proposals.write().await;
-    let rec = store
-        .get_mut(&id)
+    let mut rec = state
+        .store
+        .get(&id)
+        .await
+        .map_err(internal)?
         .ok_or((StatusCode::NOT_FOUND, format!("no proposal '{id}'")))?;
     let actor = body.actor.unwrap_or_else(|| "reviewer@portal".into());
     rec.proposal
         .record_edit(body.proposed_yaml, actor, now_iso8601(), &mut rec.audit)
         .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
-    Ok(Json(record_json(rec)))
+    state.store.put(&rec).await.map_err(internal)?;
+    Ok(Json(record_json(&rec)))
 }
 
 /// Run the conversion loop for `pipeline_id` with the offline provider set.
@@ -290,7 +298,7 @@ async fn main() -> anyhow::Result<()> {
     // Resolve the portfolio once at startup (a live audit may take a while).
     let state: Shared = Arc::new(AppState {
         portfolio: RwLock::new(resolve_portfolio().await),
-        proposals: RwLock::new(HashMap::new()),
+        store: store::from_env().await,
     });
 
     let addr = std::env::var("BIFROST_API_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
@@ -321,7 +329,7 @@ mod tests {
     fn test_state() -> Shared {
         Arc::new(AppState {
             portfolio: RwLock::new(sample::portfolio()),
-            proposals: RwLock::new(HashMap::new()),
+            store: Arc::new(store::InMemoryStore::default()),
         })
     }
 
