@@ -8,6 +8,7 @@
 //! from the LLM (see the implementation plan, §6).
 
 pub mod assemble;
+pub mod attest;
 pub mod audit;
 pub mod audit_log;
 pub mod conversion;
@@ -20,6 +21,10 @@ pub mod risk;
 pub mod runbook;
 
 pub use assemble::{assemble_workflow, GapFill};
+pub use attest::{
+    MigrationAttestation, MigrationPredicate, Signature, SignedMigrationAttestation,
+    MIGRATION_PREDICATE_TYPE,
+};
 pub use audit::{AuditCounts, AuditSummary, ManualTask, ManualTaskKind, UnsupportedStep};
 pub use audit_log::{AuditEvent, AuditLog};
 pub use conversion::{build_pipeline, pipeline_from_dry_run, signals_from_dry_run, PipelineMeta};

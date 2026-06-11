@@ -31,8 +31,8 @@ use bifrost_adapters::{
     Publisher, RunCollector, RunQuery, SandboxTrigger, TriggerRequest,
 };
 use bifrost_core::{
-    compare_parity, Attestation, AuditLog, Classification, ParityReport, Portfolio, ProposalStatus,
-    RunFacts,
+    compare_parity, Attestation, AuditLog, Classification, MigrationAttestation, ParityReport,
+    Portfolio, ProposalStatus, RunFacts,
 };
 use bifrost_llm::{MockLlmProvider, Router as LlmRouter, RoutingPolicy};
 use serde::Deserialize;
@@ -643,6 +643,49 @@ async fn attest(
     Ok(Json(record_json(&rec)))
 }
 
+/// The HMAC signing key + its id. From `BIFROST_SIGNING_KEY` (production); else a
+/// clearly-labelled dev key so the endpoint always works offline — the `key_id`
+/// tells a verifier which key signed it.
+fn signing_key() -> (Vec<u8>, String) {
+    match std::env::var("BIFROST_SIGNING_KEY") {
+        Ok(k) if !k.is_empty() => {
+            let key_id = std::env::var("BIFROST_SIGNING_KEY_ID")
+                .unwrap_or_else(|_| "bifrost-configured".into());
+            (k.into_bytes(), key_id)
+        }
+        _ => {
+            tracing::warn!(
+                "BIFROST_SIGNING_KEY not set — signing attestation with the dev key \
+                 (key_id=bifrost-dev). Do not rely on this in production."
+            );
+            (b"bifrost-dev-key".to_vec(), "bifrost-dev".to_string())
+        }
+    }
+}
+
+/// Export the signed, verifiable migration attestation (#62): the proposal's
+/// deterministic risk, every recorded decision/approval, and the smoke-parity
+/// attestation, assembled into an in-toto-inspired statement and signed with
+/// HMAC-SHA256. Air-gap safe — no signing service or network. Returns the signed
+/// JSON document (consumers can save it as the migration's attestation record).
+async fn attestation(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let rec = state
+        .store
+        .get(&id)
+        .await
+        .map_err(internal)?
+        .ok_or((StatusCode::NOT_FOUND, format!("no proposal '{id}'")))?;
+
+    let (key, key_id) = signing_key();
+    let signed = MigrationAttestation::build(&rec.proposal, rec.audit.events()).sign(&key, key_id);
+    serde_json::to_value(&signed)
+        .map(Json)
+        .map_err(|e| internal(e.into()))
+}
+
 /// Body of `POST /api/jobs/convert`: which pipelines to convert. Omit
 /// `pipelineIds` to convert every not-yet-started pipeline in the portfolio.
 #[derive(Deserialize, Default)]
@@ -859,6 +902,7 @@ fn app(state: Shared) -> Router {
         .route("/api/proposals/:id/run", get(run_result))
         .route("/api/proposals/:id/parity", get(parity))
         .route("/api/proposals/:id/attest", post(attest))
+        .route("/api/proposals/:id/attestation", get(attestation))
         .route("/api/proposals/:id/runbook", patch(set_runbook_item))
         .route("/api/jobs/convert", post(start_convert_job))
         .route("/api/jobs/:id", get(job_status))
@@ -1271,11 +1315,42 @@ mod tests {
             .is_some_and(|n| n.contains("parity attested"))));
 
         // Re-attesting is allowed while committed (re-runs the diff).
-        let res2 = attest(State(state.clone()), Path(pid), None)
+        let res2 = attest(State(state.clone()), Path(pid.clone()), None)
             .await
             .unwrap()
             .0;
         assert!(res2["proposal"]["parity"].is_object());
+
+        // The signed attestation export carries the decisions + parity and verifies.
+        let doc = attestation(State(state.clone()), Path(pid))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(doc["subject"], "SARC-main");
+        assert_eq!(doc["signature"]["algorithm"], "hmac-sha256");
+        assert!(!doc["predicate"]["decisions"].as_array().unwrap().is_empty());
+        assert!(doc["predicate"]["parity"].is_object());
+        // Round-trips through the core verifier with the dev key.
+        let signed: bifrost_core::SignedMigrationAttestation = serde_json::from_value(doc).unwrap();
+        assert!(signed.verify(b"bifrost-dev-key"));
+    }
+
+    #[tokio::test]
+    async fn attestation_exports_a_signed_record_for_any_proposal() {
+        let state = test_state();
+        let body = convert(State(state.clone()), Path("SARC-main".into()))
+            .await
+            .unwrap()
+            .0;
+        let pid = body["proposal"]["id"].as_str().unwrap().to_string();
+        // Even a fresh draft exports a (signed) attestation of its current state.
+        let doc = attestation(State(state.clone()), Path(pid))
+            .await
+            .unwrap()
+            .0;
+        let signed: bifrost_core::SignedMigrationAttestation = serde_json::from_value(doc).unwrap();
+        assert!(signed.verify(b"bifrost-dev-key"));
+        assert!(!signed.verify(b"wrong-key"));
     }
 
     #[tokio::test]
