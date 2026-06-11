@@ -36,6 +36,8 @@ thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "postgres"] }
 base64 = "0.22"
+sha2 = "0.10"
+hmac = "0.12"
 
 # Deny warnings workspace-wide so CI (clippy -D warnings) stays green by default.
 [workspace.lints.clippy]
