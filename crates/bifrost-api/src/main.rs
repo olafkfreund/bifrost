@@ -367,7 +367,9 @@ async fn run_conversion(
         pipeline_id,
         &proposal_id_for(pipeline_id),
         Classification::Yaml,
-        "languages: unknown",
+        // Empty base — convert_pipeline detects languages/build tools from the
+        // pipeline itself (#108).
+        "",
     )
     .await
 }
