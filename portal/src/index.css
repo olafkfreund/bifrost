@@ -98,3 +98,15 @@ body {
   scrollbar-width: thin;
   scrollbar-color: var(--color-ink-600) transparent;
 }
+
+/* Monaco review-diff: provenance highlighting on the generated (right) pane.
+   These classes are applied inside Monaco's own DOM, so they live here rather
+   than in Tailwind utilities. */
+.bifrost-gapfill-line {
+  background: color-mix(in srgb, var(--color-accent-aqua) 12%, transparent);
+}
+.bifrost-gapfill-glyph {
+  background: var(--color-accent-aqua);
+  width: 3px !important;
+  margin-left: 3px;
+}

@@ -1,0 +1,42 @@
+# Representative source Azure DevOps pipeline (SYNTHETIC).
+# The azure-pipelines.yml that the Importer dry-run (dry_run.log) was run
+# against — i.e. the left-hand pane of the review diff. Carries the constructs
+# that surface as gaps: a secure-file download, a custom marketplace task, a
+# matrix strategy, a service connection, and an approval-gated environment.
+# Replace with a genuine fetched definition (SourceAdapter.fetch_definition)
+# when wired to a live ADO org.
+trigger:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  - group: sarc-shared
+
+strategy:
+  matrix:
+    linux:
+      imageName: ubuntu-latest
+    windows:
+      imageName: windows-latest
+
+steps:
+  - checkout: self
+
+  - task: DownloadSecureFile@1
+    name: signingCert
+    inputs:
+      secureFile: code-signing.pfx
+
+  - script: dotnet build --configuration Release
+    displayName: Build
+
+  - task: acme-corp.deploy.DeployTask@2
+    displayName: Deploy to prod
+    inputs:
+      connectedServiceName: azure-prod
+      environment: pre-deploy
+      clientSecret: $(AZURE_CLIENT_SECRET)

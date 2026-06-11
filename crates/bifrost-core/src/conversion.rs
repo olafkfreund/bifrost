@@ -208,6 +208,7 @@ mod tests {
                 ),
             ],
             converted_yaml: String::new(),
+            source_yaml: String::new(),
         }
     }
 
@@ -243,6 +244,7 @@ mod tests {
             converted_ratio: 1.0,
             gaps: vec![],
             converted_yaml: String::new(),
+            source_yaml: String::new(),
         };
         let p = pipeline_from_dry_run(meta(), Classification::Yaml, &clean);
         assert_eq!(p.risk_band, crate::RiskBand::Green);

@@ -103,6 +103,7 @@ pub async fn convert_pipeline(
     let proposal = Proposal::new(
         proposal_id,
         pipeline_id,
+        dry.source_yaml.clone(),
         proposed_yaml,
         rationales.join("\n"),
         risk_flags,
@@ -172,6 +173,10 @@ mod tests {
         assert!(p
             .proposed_yaml
             .contains("# bifrost-gap-fill: strategy.matrix (prompt: gap-fill.v1)"));
+
+        // The source ADO definition is carried through for the review diff.
+        assert!(p.source_yaml.contains("DownloadSecureFile@1"));
+        assert!(p.source_yaml.contains("strategy:"));
 
         // Risk is the deterministic engine's verdict for this fixture (amber).
         assert_eq!(p.risk_band, bifrost_core::RiskBand::Amber);

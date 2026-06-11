@@ -26,6 +26,10 @@ use crate::risk::RiskAssessment;
 pub struct Proposal {
     pub id: String,
     pub pipeline_id: String,
+    /// The source pipeline definition (e.g. the ADO `azure-pipelines.yml`) —
+    /// the left-hand side of the review diff. Empty if unavailable.
+    #[serde(default)]
+    pub source_yaml: String,
     /// The proposed GitHub Actions workflow (Importer baseline + gap-fills).
     pub proposed_yaml: String,
     /// The model's explanation of the gap-fills (LLM-authored).
@@ -55,6 +59,7 @@ impl Proposal {
     pub fn new(
         id: impl Into<String>,
         pipeline_id: impl Into<String>,
+        source_yaml: impl Into<String>,
         proposed_yaml: impl Into<String>,
         rationale: impl Into<String>,
         risk_flags: Vec<String>,
@@ -66,6 +71,7 @@ impl Proposal {
         Self {
             id: id.into(),
             pipeline_id: pipeline_id.into(),
+            source_yaml: source_yaml.into(),
             proposed_yaml: proposed_yaml.into(),
             rationale: rationale.into(),
             risk_flags,
@@ -153,6 +159,7 @@ mod tests {
         Proposal::new(
             "prop-1",
             "SARC-main",
+            "steps:\n  - task: DownloadSecureFile@1\n",
             "steps:\n  - uses: actions/checkout@v4\n",
             "Filled the secure-file gap with an OIDC download.",
             vec!["verify the keystore secret name".into()],

@@ -217,6 +217,8 @@ pub fn parse_dry_run(log: &str) -> DryRunResult {
         // The log carries gaps, not the converted YAML; callers that have the
         // Importer's output files set `converted_yaml` separately.
         converted_yaml: String::new(),
+        // The source definition comes from the SourceAdapter, not the log.
+        source_yaml: String::new(),
     }
 }
 
@@ -248,6 +250,7 @@ pub struct MockImporter;
 const FIXTURE_AUDIT: &str = include_str!("../../../fixtures/audit_summary.md");
 const FIXTURE_DRY_RUN: &str = include_str!("../../../fixtures/dry_run.log");
 const FIXTURE_DRY_RUN_YAML: &str = include_str!("../../../fixtures/dry_run_converted.yml");
+const FIXTURE_SOURCE_YAML: &str = include_str!("../../../fixtures/source_pipeline.yml");
 
 #[async_trait]
 impl Importer for MockImporter {
@@ -263,8 +266,10 @@ impl Importer for MockImporter {
         let mut result = parse_dry_run(FIXTURE_DRY_RUN);
         result.pipeline_id = pipeline_id.to_string();
         // The log fixture carries only gaps; pair it with the Importer's baseline
-        // workflow so the conversion loop has something to assemble against.
+        // workflow so the conversion loop has something to assemble against, and
+        // with the source ADO pipeline so the review diff has a left-hand side.
         result.converted_yaml = FIXTURE_DRY_RUN_YAML.to_string();
+        result.source_yaml = FIXTURE_SOURCE_YAML.to_string();
         Ok(result)
     }
 }
