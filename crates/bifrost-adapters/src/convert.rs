@@ -310,7 +310,7 @@ mod tests {
     use super::*;
     use crate::importer::MockImporter;
     use bifrost_core::ProposalStatus;
-    use bifrost_llm::{MockLlmProvider, RoutingPolicy};
+    use bifrost_llm::{GapFillResponse, LlmProvider, MockLlmProvider, RoutingPolicy};
 
     /// Route everything to the local mock provider.
     fn mock_policy() -> RoutingPolicy {
@@ -318,6 +318,24 @@ mod tests {
             bulk: vec!["mock".into()],
             hard: vec!["mock".into()],
             docs: vec!["mock".into()],
+        }
+    }
+
+    /// A non-local "frontier" provider that **panics if its network call is ever
+    /// reached** — a tripwire for egress (#102). In air-gap mode the Router must
+    /// never route to it, so it must never fire.
+    struct EgressTripwire;
+
+    #[async_trait::async_trait]
+    impl LlmProvider for EgressTripwire {
+        fn name(&self) -> &str {
+            "frontier-tripwire"
+        }
+        fn is_local(&self) -> bool {
+            false
+        }
+        async fn fill_gap(&self, _req: &GapFillRequest) -> Result<GapFillResponse, LlmError> {
+            panic!("EGRESS: a non-local provider was called in air-gap mode");
         }
     }
 
@@ -421,6 +439,46 @@ mod tests {
         // Model provenance (#159): only the local provider produced the gap-fills,
         // which is exactly what proves no frontier model touched this pipeline.
         assert_eq!(outcome.proposal.llm_providers, vec!["mock".to_string()]);
+    }
+
+    /// Air-gap zero-egress (#102): a full conversion with a frontier tripwire
+    /// alongside the local provider, in air-gap mode, must complete **without ever
+    /// calling the tripwire** — even when the routing policy lists the frontier
+    /// provider first. If any non-local provider were reached, fill_gap would
+    /// panic and fail this test.
+    #[tokio::test]
+    async fn air_gap_conversion_makes_zero_frontier_egress() {
+        let importer = MockImporter;
+        let local = MockLlmProvider; // is_local == true
+        let frontier = EgressTripwire; // is_local == false; panics if called
+                                       // Policy *prefers* the frontier provider — air-gap must still skip it.
+        let policy = RoutingPolicy {
+            bulk: vec!["frontier-tripwire".into(), "mock".into()],
+            hard: vec!["frontier-tripwire".into(), "mock".into()],
+            docs: vec!["frontier-tripwire".into(), "mock".into()],
+        };
+        let router = Router::new(vec![&frontier, &local], /* air_gap */ true).with_policy(policy);
+
+        let outcome = convert_pipeline(
+            &importer,
+            &router,
+            "SARC-main",
+            "prop-eg",
+            Classification::Yaml,
+            "languages: dotnet",
+        )
+        .await
+        .expect("air-gap conversion completes via the local provider only");
+
+        // It converted, and provenance proves only the local model was used —
+        // zero egress to the frontier tripwire.
+        assert!(!outcome.proposal.proposed_yaml.is_empty());
+        assert_eq!(outcome.proposal.llm_providers, vec!["mock".to_string()]);
+        assert!(!outcome
+            .proposal
+            .llm_providers
+            .iter()
+            .any(|p| p == "frontier-tripwire"));
     }
 
     const SOURCE: &str = "trigger:\n  branches:\n    include:\n      - main\n\nstrategy:\n  matrix:\n    linux:\n      imageName: ubuntu-latest\n    windows:\n      imageName: windows-latest\n\nsteps:\n  - task: DownloadSecureFile@1\n    name: signingCert\n    inputs:\n      secureFile: code-signing.pfx\n\n  - script: dotnet build\n    displayName: Build\n";
