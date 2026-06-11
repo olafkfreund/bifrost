@@ -24,7 +24,10 @@ use axum::{
     routing::{get, patch, post},
     Json, Router,
 };
-use bifrost_adapters::{convert_pipeline, ConversionOutcome, MockImporter};
+use bifrost_adapters::{
+    convert_pipeline, CommitRequest, ConversionOutcome, GitHubPublisher, MockImporter,
+    MockPublisher, Publisher,
+};
 use bifrost_core::{AuditLog, Classification, Portfolio, ProposalStatus};
 use bifrost_llm::{MockLlmProvider, Router as LlmRouter, RoutingPolicy};
 use serde::Deserialize;
@@ -186,6 +189,116 @@ async fn edit(
         .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
     state.store.put(&rec).await.map_err(internal)?;
     Ok(Json(record_json(&rec)))
+}
+
+/// A filesystem-safe slug for a pipeline id (branch + workflow filename).
+fn slugify(s: &str) -> String {
+    let slug: String = s
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    slug.trim_matches('-').to_string()
+}
+
+/// PR body linking the proposal + the manual-task checklist (#56/#57).
+fn pr_body(rec: &StoredProposal) -> String {
+    let p = &rec.proposal;
+    let mut s = format!(
+        "## Bifrost-converted workflow\n\nConverted from the Azure DevOps pipeline `{}` and reviewed in Bifrost.\n\n- **Risk:** {:?} ({})\n- **Proposal:** {}\n",
+        p.pipeline_id, p.risk_band, p.risk_score, p.id
+    );
+    if !rec.runbook.items.is_empty() {
+        s.push_str("\n### Manual tasks (complete before this is production-ready)\n");
+        for item in &rec.runbook.items {
+            s.push_str(&format!("- [ ] {} — {}\n", item.title, item.detail));
+        }
+    }
+    s.push_str("\n🤖 Converted with Bifrost — review-first; auto-commit is opt-in.\n");
+    s
+}
+
+/// The publisher for the commit path: the real GitHub one when the live commit
+/// path is explicitly enabled and configured, else the offline mock (never a
+/// silent write to a customer repo).
+fn select_publisher() -> Box<dyn Publisher> {
+    let live = std::env::var("BIFROST_COMMIT_LIVE")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+    if live {
+        match GitHubPublisher::from_env() {
+            Ok(p) => return Box::new(p),
+            Err(e) => {
+                tracing::warn!("BIFROST_COMMIT_LIVE set but publisher unavailable: {e}; using mock")
+            }
+        }
+    }
+    Box::new(MockPublisher)
+}
+
+/// Commit an approved proposal's workflow and open a PR (#56). The proposal must
+/// be `Approved`; on success it moves to `Committed` (audit-logged) and carries
+/// the PR URL. Opt-in: writes to a real repo only when `BIFROST_COMMIT_LIVE` is
+/// set (else a mock PR URL).
+async fn commit(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let mut rec = state
+        .store
+        .get(&id)
+        .await
+        .map_err(internal)?
+        .ok_or((StatusCode::NOT_FOUND, format!("no proposal '{id}'")))?;
+
+    if rec.proposal.status != ProposalStatus::Approved {
+        return Err((
+            StatusCode::CONFLICT,
+            format!(
+                "proposal must be approved to commit (is {:?})",
+                rec.proposal.status
+            ),
+        ));
+    }
+
+    let slug = slugify(&rec.proposal.pipeline_id);
+    let request = CommitRequest {
+        repo: std::env::var("BIFROST_GH_REPO").unwrap_or_else(|_| "example/sandbox".into()),
+        branch: format!("bifrost/convert-{slug}"),
+        base: std::env::var("BIFROST_GH_BASE").unwrap_or_else(|_| "main".into()),
+        workflow_path: format!(".github/workflows/{slug}.yml"),
+        workflow_yaml: rec.proposal.proposed_yaml.clone(),
+        title: format!("Bifrost: convert {}", rec.proposal.pipeline_id),
+        body: pr_body(&rec),
+    };
+
+    let result = select_publisher()
+        .commit_workflow(&request)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+
+    rec.proposal.pr_url = Some(result.pr_url.clone());
+    rec.proposal
+        .transition(
+            ProposalStatus::Committed,
+            "reviewer@portal",
+            now_iso8601(),
+            &mut rec.audit,
+        )
+        .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
+    state.store.put(&rec).await.map_err(internal)?;
+
+    Ok(Json(json!({
+        "proposal": rec.proposal,
+        "runbook": rec.runbook,
+        "audit": rec.audit.events(),
+        "prUrl": result.pr_url,
+    })))
 }
 
 /// Body of `POST /api/jobs/convert`: which pipelines to convert. Omit
@@ -382,6 +495,7 @@ fn app(state: Shared) -> Router {
         .route("/api/pipelines/:id/convert", post(convert))
         .route("/api/proposals/:id/transition", post(transition))
         .route("/api/proposals/:id", patch(edit))
+        .route("/api/proposals/:id/commit", post(commit))
         .route("/api/jobs/convert", post(start_convert_job))
         .route("/api/jobs/:id", get(job_status))
         .route("/api/jobs/:id/events", get(job_events))
@@ -544,6 +658,46 @@ mod tests {
             .unwrap()
             .0;
         assert_eq!(after["audit"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn commit_requires_approval_then_opens_a_pr_and_moves_to_committed() {
+        let state = test_state();
+        let body = convert(State(state.clone()), Path("SARC-main".into()))
+            .await
+            .unwrap()
+            .0;
+        let pid = body["proposal"]["id"].as_str().unwrap().to_string();
+
+        // Committing a Draft is rejected.
+        let err = commit(State(state.clone()), Path(pid.clone()))
+            .await
+            .unwrap_err();
+        assert_eq!(err.0, StatusCode::CONFLICT);
+
+        // Walk to Approved.
+        for to in [ProposalStatus::InReview, ProposalStatus::Approved] {
+            let _ = transition(
+                State(state.clone()),
+                Path(pid.clone()),
+                Json(TransitionBody { to, actor: None }),
+            )
+            .await
+            .unwrap();
+        }
+
+        // Commit → mock PR URL, status Committed, prUrl carried on the proposal.
+        let res = commit(State(state.clone()), Path(pid.clone()))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(res["proposal"]["status"], "committed");
+        assert!(res["prUrl"].as_str().unwrap().contains("/pull/"));
+        assert_eq!(res["proposal"]["prUrl"], res["prUrl"]);
+
+        // Committing again is illegal (Committed → Committed is not an edge).
+        let err = commit(State(state.clone()), Path(pid)).await.unwrap_err();
+        assert_eq!(err.0, StatusCode::CONFLICT);
     }
 
     #[tokio::test]
