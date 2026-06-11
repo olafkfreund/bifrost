@@ -25,8 +25,9 @@ use axum::{
     Json, Router,
 };
 use bifrost_adapters::{
-    convert_pipeline, CommitRequest, ConversionOutcome, GitHubPublisher, GitHubSandboxTrigger,
-    MockImporter, MockPublisher, MockSandboxTrigger, Publisher, SandboxTrigger, TriggerRequest,
+    convert_pipeline, declared_outputs, CommitRequest, ConversionOutcome, GitHubPublisher,
+    GitHubRunCollector, GitHubSandboxTrigger, MockImporter, MockPublisher, MockRunCollector,
+    MockSandboxTrigger, Publisher, RunCollector, RunQuery, SandboxTrigger, TriggerRequest,
 };
 use bifrost_core::{AuditLog, Classification, Portfolio, ProposalStatus};
 use bifrost_llm::{MockLlmProvider, Router as LlmRouter, RoutingPolicy};
@@ -417,6 +418,81 @@ async fn validate(
     })))
 }
 
+/// The run collector: reads the real GitHub Actions run when the live validation
+/// path is enabled + configured, else the mock (never a silent external call).
+fn select_collector() -> Box<dyn RunCollector> {
+    let live = std::env::var("BIFROST_VALIDATE_LIVE")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+    if live {
+        match GitHubRunCollector::from_env() {
+            Ok(c) => return Box::new(c),
+            Err(e) => {
+                tracing::warn!(
+                    "BIFROST_VALIDATE_LIVE set but collector unavailable: {e}; using mock"
+                )
+            }
+        }
+    }
+    Box::new(MockRunCollector)
+}
+
+/// Capture the result of the converted run (#59): status, jobs, artifacts, and the
+/// outputs the workflow declares. The proposal must be `Committed` (the workflow
+/// exists in the repo to have been dispatched). Reads the real GitHub run only when
+/// `BIFROST_VALIDATE_LIVE` is set (else mock). Diffing against the ADO baseline is #60.
+async fn run_result(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let rec = state
+        .store
+        .get(&id)
+        .await
+        .map_err(internal)?
+        .ok_or((StatusCode::NOT_FOUND, format!("no proposal '{id}'")))?;
+
+    if rec.proposal.status != ProposalStatus::Committed {
+        return Err((
+            StatusCode::CONFLICT,
+            format!(
+                "proposal must be committed to capture a run (is {:?})",
+                rec.proposal.status
+            ),
+        ));
+    }
+
+    let slug = slugify(&rec.proposal.pipeline_id);
+    let query = RunQuery {
+        repo: std::env::var("BIFROST_GH_REPO").unwrap_or_else(|_| "example/sandbox".into()),
+        workflow_file: format!("{slug}.yml"),
+        git_ref: format!("bifrost/convert-{slug}"),
+    };
+    let run = select_collector()
+        .collect(&query)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+    let outputs = declared_outputs(&rec.proposal.proposed_yaml);
+
+    Ok(Json(json!({
+        "proposal": rec.proposal,
+        "run": {
+            "runId": run.run_id,
+            "status": run.status,
+            "conclusion": run.conclusion,
+            "jobs": run.jobs.iter().map(|j| json!({
+                "name": j.name,
+                "conclusion": j.conclusion,
+            })).collect::<Vec<_>>(),
+            "artifacts": run.artifacts.iter().map(|a| json!({
+                "name": a.name,
+                "sizeBytes": a.size_bytes,
+            })).collect::<Vec<_>>(),
+        },
+        "declaredOutputs": outputs,
+    })))
+}
+
 /// Body of `POST /api/jobs/convert`: which pipelines to convert. Omit
 /// `pipelineIds` to convert every not-yet-started pipeline in the portfolio.
 #[derive(Deserialize, Default)]
@@ -630,6 +706,7 @@ fn app(state: Shared) -> Router {
         .route("/api/proposals/:id", patch(edit))
         .route("/api/proposals/:id/commit", post(commit))
         .route("/api/proposals/:id/validate", post(validate))
+        .route("/api/proposals/:id/run", get(run_result))
         .route("/api/proposals/:id/runbook", patch(set_runbook_item))
         .route("/api/jobs/convert", post(start_convert_job))
         .route("/api/jobs/:id", get(job_status))
@@ -856,6 +933,66 @@ mod tests {
         // Draft can't be validated.
         let err = validate(State(state.clone()), Path(pid)).await.unwrap_err();
         assert_eq!(err.0, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn run_result_requires_committed() {
+        let state = test_state();
+        let body = convert(State(state.clone()), Path("SARC-main".into()))
+            .await
+            .unwrap()
+            .0;
+        let pid = body["proposal"]["id"].as_str().unwrap().to_string();
+        // A run can't be captured before the workflow is committed/dispatched.
+        let err = run_result(State(state.clone()), Path(pid))
+            .await
+            .unwrap_err();
+        assert_eq!(err.0, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn run_result_after_commit_reports_mock_run() {
+        let state = test_state();
+        let body = convert(State(state.clone()), Path("SARC-main".into()))
+            .await
+            .unwrap()
+            .0;
+        let pid = body["proposal"]["id"].as_str().unwrap().to_string();
+
+        // Resolve required tasks, then approve → commit.
+        let n = body["runbook"]["items"].as_array().unwrap().len();
+        for i in 0..n {
+            let _ = set_runbook_item(
+                State(state.clone()),
+                Path(pid.clone()),
+                Json(RunbookItemBody {
+                    index: i,
+                    done: true,
+                }),
+            )
+            .await
+            .unwrap();
+        }
+        for to in [ProposalStatus::InReview, ProposalStatus::Approved] {
+            let _ = transition(
+                State(state.clone()),
+                Path(pid.clone()),
+                Json(TransitionBody { to, actor: None }),
+            )
+            .await
+            .unwrap();
+        }
+        let _ = commit(State(state.clone()), Path(pid.clone()))
+            .await
+            .unwrap();
+
+        // Capture the run → mock collector reports a completed/success run.
+        let res = run_result(State(state.clone()), Path(pid)).await.unwrap().0;
+        assert_eq!(res["run"]["status"], "completed");
+        assert_eq!(res["run"]["conclusion"], "success");
+        assert!(!res["run"]["jobs"].as_array().unwrap().is_empty());
+        // Declared outputs come from the proposed workflow YAML (may be empty).
+        assert!(res["declaredOutputs"].is_array());
     }
 
     #[tokio::test]
