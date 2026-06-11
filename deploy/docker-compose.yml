@@ -23,6 +23,10 @@ services:
       # HMAC signing key for attestation export (#62/#63). Set in production.
       BIFROST_SIGNING_KEY: ${BIFROST_SIGNING_KEY:-}
       BIFROST_SIGNING_KEY_ID: ${BIFROST_SIGNING_KEY_ID:-}
+      # Portal SSO (#65): set BIFROST_AUTH=entra to require Entra ID tokens.
+      BIFROST_AUTH: ${BIFROST_AUTH:-}
+      BIFROST_ENTRA_TENANT_ID: ${BIFROST_ENTRA_TENANT_ID:-}
+      BIFROST_ENTRA_AUDIENCE: ${BIFROST_ENTRA_AUDIENCE:-}
       RUST_LOG: ${RUST_LOG:-bifrost_api=info,tower_http=info}
     volumes:
       - bifrost-data:/data

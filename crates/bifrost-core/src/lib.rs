@@ -13,6 +13,7 @@ pub mod audit;
 pub mod audit_log;
 pub mod conversion;
 pub mod gap;
+pub mod identity;
 pub mod ingestion;
 pub mod model;
 pub mod parity;
@@ -29,6 +30,7 @@ pub use audit::{AuditCounts, AuditSummary, ManualTask, ManualTaskKind, Unsupport
 pub use audit_log::{AuditEvent, AuditLog};
 pub use conversion::{build_pipeline, pipeline_from_dry_run, signals_from_dry_run, PipelineMeta};
 pub use gap::{DryRunResult, Gap, GapKind};
+pub use identity::{Identity, Role};
 pub use ingestion::{
     PipelineDefinition, Project, ServiceConnection, SourcePipeline, TaskKind, TaskUsage,
     VariableGroup, VariableRef,
