@@ -136,3 +136,21 @@ export interface ConversionResult {
   /** The proposal's audit trail, oldest first. */
   audit: AuditEvent[]
 }
+
+/** One pipeline's outcome within a conversion job. */
+export interface JobItem {
+  pipelineId: string
+  ok: boolean
+  /** Already converted in a prior run — skipped (resumability). */
+  skipped: boolean
+  error?: string
+}
+
+/** Progress of a conversion job (fan-out across pipelines). */
+export interface JobProgress {
+  jobId: string
+  total: number
+  done: number
+  finished: boolean
+  items: JobItem[]
+}

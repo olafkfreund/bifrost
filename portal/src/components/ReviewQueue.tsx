@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react'
-import type { Pipeline, ProposalStatus, RiskBand } from '../types'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { JobProgress, Pipeline, ProposalStatus, RiskBand } from '../types'
+import type { BifrostApi } from '../api/client'
 import { statusLabel, riskMeta } from '../lib/format'
 import { RiskBadge } from './RiskBadge'
 
@@ -37,13 +38,41 @@ function when(iso?: string): string {
  */
 export function ReviewQueue({
   pipelines,
+  api,
   onSelect,
+  onRefresh,
 }: {
   pipelines: Pipeline[]
+  api: BifrostApi
   onSelect: (p: Pipeline) => void
+  onRefresh: () => void
 }) {
   const [statusFilter, setStatusFilter] = useState<ProposalStatus | 'all'>('all')
   const [riskFilter, setRiskFilter] = useState<RiskBand | 'all'>('all')
+  const [job, setJob] = useState<JobProgress | null>(null)
+  const unsub = useRef<(() => void) | null>(null)
+
+  useEffect(() => () => unsub.current?.(), [])
+
+  const notStarted = pipelines.filter((p) => p.status === 'not_started').length
+  const running = job != null && !job.finished
+
+  async function convertAll() {
+    if (notStarted === 0 || running) return
+    const ids = pipelines.filter((p) => p.status === 'not_started').map((p) => p.id)
+    const { jobId } = await api.startConvertJob(ids)
+    unsub.current?.()
+    unsub.current = api.subscribeJob(jobId, (p) => {
+      setJob(p)
+      if (p.finished) {
+        unsub.current?.()
+        unsub.current = null
+        onRefresh()
+        // Clear the bar once the refreshed queue paints the new statuses.
+        setTimeout(() => setJob(null), 800)
+      }
+    })
+  }
 
   const total = pipelines.length
   const counts = useMemo(() => {
@@ -77,6 +106,14 @@ export function ReviewQueue({
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={convertAll}
+            disabled={notStarted === 0 || running}
+            title={notStarted === 0 ? 'Nothing left to convert' : `Convert ${notStarted} not-started pipelines`}
+            className="rounded-lg bg-brand-500 px-3 py-1.5 text-xs font-medium text-ink-950 transition hover:bg-brand-400 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {running ? `Converting ${job!.done}/${job!.total}…` : `Convert all (${notStarted})`}
+          </button>
           <div className="flex overflow-hidden rounded-lg border border-ink-800 text-xs">
             {(['all', 'green', 'amber', 'red'] as const).map((b) => (
               <button
@@ -92,6 +129,26 @@ export function ReviewQueue({
           </div>
         </div>
       </div>
+
+      {/* job progress bar (visible while a conversion job runs) */}
+      {job != null && (
+        <div className="mb-4 rounded-xl border border-ink-800 bg-ink-900/40 p-4">
+          <div className="mb-2 flex items-center justify-between text-xs">
+            <span className="font-medium text-ink-200">
+              {job.finished ? 'Conversion complete' : 'Converting pipelines…'}
+            </span>
+            <span className="font-mono text-ink-300">
+              {job.done}/{job.total}
+            </span>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-ink-800">
+            <div
+              className="h-full rounded-full bg-brand-400 transition-all duration-300"
+              style={{ width: `${job.total ? (job.done / job.total) * 100 : 0}%` }}
+            />
+          </div>
+        </div>
+      )}
 
       {/* lifecycle progress bar */}
       <div className="rounded-xl border border-ink-800 bg-ink-900/40 p-4">
