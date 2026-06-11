@@ -25,8 +25,8 @@ use axum::{
     Json, Router,
 };
 use bifrost_adapters::{
-    convert_pipeline, CommitRequest, ConversionOutcome, GitHubPublisher, MockImporter,
-    MockPublisher, Publisher,
+    convert_pipeline, CommitRequest, ConversionOutcome, GitHubPublisher, GitHubSandboxTrigger,
+    MockImporter, MockPublisher, MockSandboxTrigger, Publisher, SandboxTrigger, TriggerRequest,
 };
 use bifrost_core::{AuditLog, Classification, Portfolio, ProposalStatus};
 use bifrost_llm::{MockLlmProvider, Router as LlmRouter, RoutingPolicy};
@@ -353,6 +353,70 @@ async fn commit(
     })))
 }
 
+/// The sandbox trigger: real GitHub `workflow_dispatch` when the live validation
+/// path is enabled + configured, else the mock (never a silent CI run).
+fn select_trigger() -> Box<dyn SandboxTrigger> {
+    let live = std::env::var("BIFROST_VALIDATE_LIVE")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+    if live {
+        match GitHubSandboxTrigger::from_env() {
+            Ok(t) => return Box::new(t),
+            Err(e) => {
+                tracing::warn!("BIFROST_VALIDATE_LIVE set but trigger unavailable: {e}; using mock")
+            }
+        }
+    }
+    Box::new(MockSandboxTrigger)
+}
+
+/// Trigger the committed workflow in the sandbox (#58) — the first step of
+/// smoke-parity. The proposal must be `Committed` (the workflow exists in the
+/// repo). Opt-in: a real `workflow_dispatch` runs only when `BIFROST_VALIDATE_LIVE`
+/// is set (else mock). Capturing the run + diffing the baseline are #59/#60.
+async fn validate(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let rec = state
+        .store
+        .get(&id)
+        .await
+        .map_err(internal)?
+        .ok_or((StatusCode::NOT_FOUND, format!("no proposal '{id}'")))?;
+
+    if rec.proposal.status != ProposalStatus::Committed {
+        return Err((
+            StatusCode::CONFLICT,
+            format!(
+                "proposal must be committed to validate (is {:?})",
+                rec.proposal.status
+            ),
+        ));
+    }
+
+    let slug = slugify(&rec.proposal.pipeline_id);
+    let request = TriggerRequest {
+        repo: std::env::var("BIFROST_GH_REPO").unwrap_or_else(|_| "example/sandbox".into()),
+        workflow_file: format!("{slug}.yml"),
+        git_ref: format!("bifrost/convert-{slug}"),
+    };
+    let result = select_trigger()
+        .trigger(&request)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+
+    Ok(Json(json!({
+        "proposal": rec.proposal,
+        "trigger": {
+            "repo": result.repo,
+            "workflowFile": result.workflow_file,
+            "gitRef": result.git_ref,
+            "dispatched": result.dispatched,
+        },
+    })))
+}
+
 /// Body of `POST /api/jobs/convert`: which pipelines to convert. Omit
 /// `pipelineIds` to convert every not-yet-started pipeline in the portfolio.
 #[derive(Deserialize, Default)]
@@ -565,6 +629,7 @@ fn app(state: Shared) -> Router {
         .route("/api/proposals/:id/transition", post(transition))
         .route("/api/proposals/:id", patch(edit))
         .route("/api/proposals/:id/commit", post(commit))
+        .route("/api/proposals/:id/validate", post(validate))
         .route("/api/proposals/:id/runbook", patch(set_runbook_item))
         .route("/api/jobs/convert", post(start_convert_job))
         .route("/api/jobs/:id", get(job_status))
@@ -766,7 +831,30 @@ mod tests {
         assert_eq!(res["proposal"]["prUrl"], res["prUrl"]);
 
         // Committing again is illegal (Committed → Committed is not an edge).
-        let err = commit(State(state.clone()), Path(pid)).await.unwrap_err();
+        let err = commit(State(state.clone()), Path(pid.clone()))
+            .await
+            .unwrap_err();
+        assert_eq!(err.0, StatusCode::CONFLICT);
+
+        // Validate (sandbox trigger) is allowed once Committed → mock dispatch.
+        let v = validate(State(state.clone()), Path(pid)).await.unwrap().0;
+        assert_eq!(v["trigger"]["dispatched"], true);
+        assert!(v["trigger"]["workflowFile"]
+            .as_str()
+            .unwrap()
+            .ends_with(".yml"));
+    }
+
+    #[tokio::test]
+    async fn validate_requires_committed() {
+        let state = test_state();
+        let body = convert(State(state.clone()), Path("SARC-main".into()))
+            .await
+            .unwrap()
+            .0;
+        let pid = body["proposal"]["id"].as_str().unwrap().to_string();
+        // Draft can't be validated.
+        let err = validate(State(state.clone()), Path(pid)).await.unwrap_err();
         assert_eq!(err.0, StatusCode::CONFLICT);
     }
 
