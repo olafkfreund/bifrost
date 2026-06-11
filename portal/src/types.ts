@@ -91,6 +91,10 @@ export interface ChecklistItem {
   title: string
   construct: string
   detail: string
+  /** Must be resolved before the migration can be validated. */
+  required?: boolean
+  /** Whether a human has marked this task done (#57). */
+  done?: boolean
 }
 
 /** The per-pipeline manual-task checklist. */

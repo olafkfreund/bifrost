@@ -152,10 +152,52 @@ async fn transition(
         .await
         .map_err(internal)?
         .ok_or((StatusCode::NOT_FOUND, format!("no proposal '{id}'")))?;
+
+    // Gate the terminal state on the manual-task tracker (#57): a migration is
+    // not "done" until every required runbook task is resolved.
+    if body.to == ProposalStatus::Validated {
+        let remaining = rec.runbook.required_remaining();
+        if remaining > 0 {
+            return Err((
+                StatusCode::CONFLICT,
+                format!("{remaining} required manual task(s) still open — resolve them before validating"),
+            ));
+        }
+    }
+
     let actor = body.actor.unwrap_or_else(|| "reviewer@portal".into());
     rec.proposal
         .transition(body.to, actor, now_iso8601(), &mut rec.audit)
         .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
+    state.store.put(&rec).await.map_err(internal)?;
+    Ok(Json(record_json(&rec)))
+}
+
+/// Body of `PATCH /api/proposals/:id/runbook`: mark a manual task done/undone.
+#[derive(Deserialize)]
+struct RunbookItemBody {
+    index: usize,
+    done: bool,
+}
+
+/// Toggle a runbook item's completion (#57). 404 for an unknown proposal or
+/// out-of-range index.
+async fn set_runbook_item(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+    Json(body): Json<RunbookItemBody>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let mut rec = state
+        .store
+        .get(&id)
+        .await
+        .map_err(internal)?
+        .ok_or((StatusCode::NOT_FOUND, format!("no proposal '{id}'")))?;
+    let item = rec.runbook.items.get_mut(body.index).ok_or((
+        StatusCode::NOT_FOUND,
+        format!("no runbook item {}", body.index),
+    ))?;
+    item.done = body.done;
     state.store.put(&rec).await.map_err(internal)?;
     Ok(Json(record_json(&rec)))
 }
@@ -496,6 +538,7 @@ fn app(state: Shared) -> Router {
         .route("/api/proposals/:id/transition", post(transition))
         .route("/api/proposals/:id", patch(edit))
         .route("/api/proposals/:id/commit", post(commit))
+        .route("/api/proposals/:id/runbook", patch(set_runbook_item))
         .route("/api/jobs/convert", post(start_convert_job))
         .route("/api/jobs/:id", get(job_status))
         .route("/api/jobs/:id/events", get(job_events))
@@ -698,6 +741,73 @@ mod tests {
         // Committing again is illegal (Committed → Committed is not an edge).
         let err = commit(State(state.clone()), Path(pid)).await.unwrap_err();
         assert_eq!(err.0, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn validate_is_gated_on_required_manual_tasks() {
+        let state = test_state();
+        let body = convert(State(state.clone()), Path("SARC-main".into()))
+            .await
+            .unwrap()
+            .0;
+        let pid = body["proposal"]["id"].as_str().unwrap().to_string();
+        let n = body["runbook"]["items"].as_array().unwrap().len();
+        assert!(n > 0, "SARC-main has manual tasks");
+
+        // Walk to Committed (approve → commit).
+        for to in [ProposalStatus::InReview, ProposalStatus::Approved] {
+            let _ = transition(
+                State(state.clone()),
+                Path(pid.clone()),
+                Json(TransitionBody { to, actor: None }),
+            )
+            .await
+            .unwrap();
+        }
+        let _ = commit(State(state.clone()), Path(pid.clone()))
+            .await
+            .unwrap();
+
+        // Committed → Validated is blocked while required tasks are open.
+        let err = transition(
+            State(state.clone()),
+            Path(pid.clone()),
+            Json(TransitionBody {
+                to: ProposalStatus::Validated,
+                actor: None,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::CONFLICT);
+
+        // Resolve every manual task.
+        for i in 0..n {
+            let _ = set_runbook_item(
+                State(state.clone()),
+                Path(pid.clone()),
+                Json(RunbookItemBody {
+                    index: i,
+                    done: true,
+                }),
+            )
+            .await
+            .unwrap();
+        }
+
+        // Now validation goes through.
+        let res = transition(
+            State(state.clone()),
+            Path(pid),
+            Json(TransitionBody {
+                to: ProposalStatus::Validated,
+                actor: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(res["proposal"]["status"], "validated");
     }
 
     #[tokio::test]
