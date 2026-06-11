@@ -8,6 +8,7 @@
 //!
 //! Any failure falls back to the next source, so the server always starts.
 
+mod auth;
 mod jobs;
 mod sample;
 mod store;
@@ -17,12 +18,14 @@ use std::convert::Infallible;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Request, State};
 use axum::http::StatusCode;
+use axum::middleware::Next;
 use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::{IntoResponse, Response};
 use axum::{
     routing::{get, patch, post},
-    Json, Router,
+    Extension, Json, Router,
 };
 use bifrost_adapters::{
     convert_pipeline, declared_outputs, github_token_from_env, AzureDevOpsBaseline,
@@ -32,8 +35,8 @@ use bifrost_adapters::{
     TriggerRequest,
 };
 use bifrost_core::{
-    compare_parity, Attestation, AuditLog, AuditPack, Classification, MigrationAttestation,
-    ParityReport, Portfolio, ProposalStatus, RunFacts,
+    compare_parity, Attestation, AuditLog, AuditPack, Classification, Identity,
+    MigrationAttestation, ParityReport, Portfolio, ProposalStatus, RunFacts,
 };
 use bifrost_llm::{MockLlmProvider, Router as LlmRouter, RoutingPolicy};
 use serde::Deserialize;
@@ -52,6 +55,10 @@ struct AppState {
     store: Arc<dyn ProposalStore>,
     jobs: jobs::JobRegistry,
     next_job: AtomicU64,
+    /// Resolves the acting identity from a bearer token (#65).
+    auth: Arc<dyn auth::Authenticator>,
+    /// Whether a valid token is required on `/api/*` (else open / local admin).
+    auth_enabled: bool,
 }
 
 type Shared = Arc<AppState>;
@@ -949,9 +956,55 @@ fn app(state: Shared) -> Router {
         .route("/api/jobs/convert", post(start_convert_job))
         .route("/api/jobs/:id", get(job_status))
         .route("/api/jobs/:id/events", get(job_events))
+        .route("/api/me", get(me))
+        // Authenticate (and, when enabled, gate) every /api/* request, attaching
+        // the resolved Identity to the request for handlers/RBAC (#65/#66).
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+/// Authenticate the request and attach the [`Identity`]. `/api/health` is always
+/// open. When auth is disabled every request is the local admin; when enabled a
+/// valid bearer token is required (401 otherwise). Role/tenant enforcement on top
+/// of this is #66.
+async fn auth_middleware(State(state): State<Shared>, mut req: Request, next: Next) -> Response {
+    if req.uri().path() == "/api/health" {
+        return next.run(req).await;
+    }
+    let identity = if state.auth_enabled {
+        let bearer = req
+            .headers()
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|h| h.to_str().ok())
+            .and_then(|h| h.strip_prefix("Bearer "));
+        match bearer {
+            Some(token) => match state.auth.authenticate(token).await {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::debug!("auth rejected: {e}");
+                    return (StatusCode::UNAUTHORIZED, "invalid token").into_response();
+                }
+            },
+            None => return (StatusCode::UNAUTHORIZED, "missing bearer token").into_response(),
+        }
+    } else {
+        Identity::local_admin()
+    };
+    req.extensions_mut().insert(identity);
+    next.run(req).await
+}
+
+/// Who am I — the authenticated identity for the current request (#65).
+async fn me(identity: Option<Extension<Identity>>) -> Result<Json<Identity>, (StatusCode, String)> {
+    match identity {
+        Some(Extension(id)) => Ok(Json(id)),
+        None => Err((StatusCode::UNAUTHORIZED, "not authenticated".into())),
+    }
 }
 
 /// Resolve the portfolio source (see module docs). Never panics.
@@ -1027,11 +1080,14 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     // Resolve the portfolio once at startup (a live audit may take a while).
+    let (authn, auth_enabled) = auth::select_authenticator();
     let state: Shared = Arc::new(AppState {
         portfolio: RwLock::new(resolve_portfolio().await),
         store: store::from_env().await,
         jobs: RwLock::new(HashMap::new()),
         next_job: AtomicU64::new(1),
+        auth: authn,
+        auth_enabled,
     });
 
     let addr = std::env::var("BIFROST_API_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
@@ -1065,6 +1121,8 @@ mod tests {
             store: Arc::new(store::InMemoryStore::default()),
             jobs: RwLock::new(HashMap::new()),
             next_job: AtomicU64::new(1),
+            auth: Arc::new(auth::MockAuthenticator::default()),
+            auth_enabled: false,
         })
     }
 
@@ -1393,6 +1451,18 @@ mod tests {
         let signed: bifrost_core::SignedMigrationAttestation = serde_json::from_value(doc).unwrap();
         assert!(signed.verify(b"bifrost-dev-key"));
         assert!(!signed.verify(b"wrong-key"));
+    }
+
+    #[tokio::test]
+    async fn me_returns_identity_when_present_and_401_when_absent() {
+        // The middleware injects an Identity; /api/me echoes it.
+        let id = Identity::local_admin();
+        let out = me(Some(Extension(id.clone()))).await.unwrap().0;
+        assert_eq!(out.subject, id.subject);
+        assert!(out.has_role(bifrost_core::Role::Admin));
+        // No identity (would only happen outside the middleware) → 401.
+        let err = me(None).await.unwrap_err();
+        assert_eq!(err.0, StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

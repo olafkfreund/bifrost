@@ -213,14 +213,25 @@ class MockBifrostApi implements BifrostApi {
   }
 }
 
+// When Entra SSO is enabled (backend `BIFROST_AUTH=entra`), the browser login
+// flow stores the acquired bearer token here; the client attaches it to every
+// API call. With SSO disabled the key is absent and requests go out unauthed.
+const TOKEN_KEY = 'bifrost_token'
+
 class HttpBifrostApi implements BifrostApi {
   private readonly base: string
   constructor(base = '/api') {
     this.base = base
   }
 
+  // Merge the Authorization header in when a token is present (Entra SSO).
+  private headers(extra: Record<string, string> = {}): Record<string, string> {
+    const token = sessionStorage.getItem(TOKEN_KEY)
+    return token ? { ...extra, authorization: `Bearer ${token}` } : extra
+  }
+
   async getPortfolio(): Promise<Portfolio> {
-    const res = await fetch(`${this.base}/portfolio`)
+    const res = await fetch(`${this.base}/portfolio`, { headers: this.headers() })
     if (!res.ok) throw new Error(`portfolio request failed: ${res.status}`)
     return (await res.json()) as Portfolio
   }
@@ -228,6 +239,7 @@ class HttpBifrostApi implements BifrostApi {
   async convertPipeline(id: string): Promise<ConversionResult> {
     const res = await fetch(`${this.base}/pipelines/${encodeURIComponent(id)}/convert`, {
       method: 'POST',
+      headers: this.headers(),
     })
     if (!res.ok) throw new Error(`convert request failed: ${res.status}`)
     return (await res.json()) as ConversionResult
@@ -236,7 +248,7 @@ class HttpBifrostApi implements BifrostApi {
   async transitionProposal(proposalId: string, to: ProposalStatus, actor = 'reviewer@portal'): Promise<ConversionResult> {
     const res = await fetch(`${this.base}/proposals/${encodeURIComponent(proposalId)}/transition`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: this.headers({ 'content-type': 'application/json' }),
       body: JSON.stringify({ to, actor }),
     })
     if (!res.ok) throw new Error(`${res.status}: ${(await res.text()) || 'transition failed'}`)
@@ -246,7 +258,7 @@ class HttpBifrostApi implements BifrostApi {
   async editProposal(proposalId: string, proposedYaml: string, actor = 'reviewer@portal'): Promise<ConversionResult> {
     const res = await fetch(`${this.base}/proposals/${encodeURIComponent(proposalId)}`, {
       method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
+      headers: this.headers({ 'content-type': 'application/json' }),
       body: JSON.stringify({ proposedYaml, actor }),
     })
     if (!res.ok) throw new Error(`${res.status}: ${(await res.text()) || 'edit failed'}`)
@@ -256,7 +268,7 @@ class HttpBifrostApi implements BifrostApi {
   async startConvertJob(pipelineIds?: string[]): Promise<{ jobId: string; total: number }> {
     const res = await fetch(`${this.base}/jobs/convert`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: this.headers({ 'content-type': 'application/json' }),
       body: JSON.stringify(pipelineIds ? { pipelineIds } : {}),
     })
     if (!res.ok) throw new Error(`start job failed: ${res.status}`)
