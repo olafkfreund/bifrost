@@ -32,6 +32,18 @@ export interface BifrostApi {
   listConnections(): Promise<ConnectionView[]>
   createConnection(input: ConnectionInput): Promise<ConnectionView>
   deleteConnection(id: string): Promise<void>
+  /** Onboarding health checks (#161). */
+  health(): Promise<boolean>
+  me(): Promise<MeView | null>
+}
+
+/** The authenticated identity (`/api/me`), or `null` when not authenticated. */
+export interface MeView {
+  subject: string
+  tenant: string
+  roles: string[]
+  name?: string
+  email?: string
 }
 
 /** Legal lifecycle edges — mirrors `is_legal_transition` in bifrost-core. */
@@ -243,6 +255,12 @@ class MockBifrostApi implements BifrostApi {
   async deleteConnection(id: string): Promise<void> {
     this.connections = this.connections.filter((c) => c.id !== id)
   }
+  async health(): Promise<boolean> {
+    return true
+  }
+  async me(): Promise<MeView | null> {
+    return { subject: 'local', tenant: 'default', roles: ['admin'], name: 'Local Admin' }
+  }
 }
 
 /** Redact a create-input into a list-view kind (drops any inline plaintext). */
@@ -386,6 +404,22 @@ class HttpBifrostApi implements BifrostApi {
       headers: this.headers(),
     })
     if (!res.ok) throw new Error(`${res.status}: ${(await res.text()) || 'delete failed'}`)
+  }
+
+  async health(): Promise<boolean> {
+    try {
+      const res = await fetch(`${this.base}/health`)
+      return res.ok
+    } catch {
+      return false
+    }
+  }
+
+  async me(): Promise<MeView | null> {
+    const res = await fetch(`${this.base}/me`, { headers: this.headers() })
+    if (res.status === 401) return null
+    if (!res.ok) throw new Error(`me request failed: ${res.status}`)
+    return (await res.json()) as MeView
   }
 }
 
