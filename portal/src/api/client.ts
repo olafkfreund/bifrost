@@ -35,6 +35,16 @@ export interface BifrostApi {
   /** Onboarding health checks (#161). */
   health(): Promise<boolean>
   me(): Promise<MeView | null>
+  /** LLM routing policy (#158) — Admin-only, per-tenant. */
+  getRouting(): Promise<{ policy: RoutingPolicy; airGap: boolean }>
+  putRouting(policy: RoutingPolicy): Promise<void>
+}
+
+/** Ordered provider-name preference per task class (mirrors bifrost-llm). */
+export interface RoutingPolicy {
+  bulk: string[]
+  hard: string[]
+  docs: string[]
 }
 
 /** The authenticated identity (`/api/me`), or `null` when not authenticated. */
@@ -261,6 +271,17 @@ class MockBifrostApi implements BifrostApi {
   async me(): Promise<MeView | null> {
     return { subject: 'local', tenant: 'default', roles: ['admin'], name: 'Local Admin' }
   }
+  private routing: RoutingPolicy = {
+    bulk: ['ollama', 'mock'],
+    hard: ['anthropic', 'ollama'],
+    docs: ['anthropic'],
+  }
+  async getRouting(): Promise<{ policy: RoutingPolicy; airGap: boolean }> {
+    return { policy: this.routing, airGap: false }
+  }
+  async putRouting(policy: RoutingPolicy): Promise<void> {
+    this.routing = policy
+  }
 }
 
 /** Redact a create-input into a list-view kind (drops any inline plaintext). */
@@ -420,6 +441,19 @@ class HttpBifrostApi implements BifrostApi {
     if (res.status === 401) return null
     if (!res.ok) throw new Error(`me request failed: ${res.status}`)
     return (await res.json()) as MeView
+  }
+  async getRouting(): Promise<{ policy: RoutingPolicy; airGap: boolean }> {
+    const res = await fetch(`${this.base}/routing`, { headers: this.headers() })
+    if (!res.ok) throw new Error(`routing request failed: ${res.status}`)
+    return (await res.json()) as { policy: RoutingPolicy; airGap: boolean }
+  }
+  async putRouting(policy: RoutingPolicy): Promise<void> {
+    const res = await fetch(`${this.base}/routing`, {
+      method: 'PUT',
+      headers: this.headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify(policy),
+    })
+    if (!res.ok) throw new Error(`${res.status}: ${(await res.text()) || 'save failed'}`)
   }
 }
 

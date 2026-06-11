@@ -229,7 +229,14 @@ async fn convert(
         .iter()
         .find(|p| p.id == id)
         .map(|p| p.project.clone());
-    let outcome = run_conversion(&id, project.as_deref())
+    // The caller-tenant's saved routing policy (#158) steers provider selection.
+    let policy = state
+        .store
+        .get_routing_policy(&caller.tenant)
+        .await
+        .ok()
+        .flatten();
+    let outcome = run_conversion(&id, project.as_deref(), policy)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let rec = StoredProposal {
@@ -840,6 +847,49 @@ async fn audit_pack(
         .map_err(|e| internal(e.into()))
 }
 
+// ── LLM routing policy (#158) ─────────────────────────────────────────────────
+
+/// The caller-tenant's LLM routing policy (#158), or the deployment default.
+/// Admin-only (enforced by the middleware).
+async fn get_routing(
+    State(state): State<Shared>,
+    Extension(caller): Extension<Identity>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let policy = state
+        .store
+        .get_routing_policy(&caller.tenant)
+        .await
+        .map_err(internal)?
+        .unwrap_or_else(RoutingPolicy::from_env);
+    Ok(Json(serde_json::json!({
+        "policy": policy,
+        // The air-gap flag is deployment-level; surfaced read-only for the editor.
+        "airGap": std::env::var("BIFROST_AIR_GAP")
+            .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false),
+    })))
+}
+
+/// Save the caller-tenant's LLM routing policy (#158). Admin-only. The bodies are
+/// provider-name preference lists per task class (bulk / hard / docs).
+async fn put_routing(
+    State(state): State<Shared>,
+    Extension(caller): Extension<Identity>,
+    Json(policy): Json<RoutingPolicy>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    state
+        .store
+        .put_routing_policy(&caller.tenant, &policy)
+        .await
+        .map_err(internal)?;
+    tracing::info!(
+        "routing policy updated for tenant '{}' by {}",
+        caller.tenant,
+        caller.actor()
+    );
+    Ok(Json(serde_json::json!({ "policy": policy })))
+}
+
 // ── Connections (#154) ────────────────────────────────────────────────────────
 
 /// How a secret is supplied when creating a connection. `inline` carries a
@@ -1152,6 +1202,7 @@ async fn job_events(
 async fn run_conversion(
     pipeline_id: &str,
     project: Option<&str>,
+    policy_override: Option<RoutingPolicy>,
 ) -> Result<ConversionOutcome, bifrost_adapters::ConversionError> {
     use bifrost_adapters::{DockerImporter, Importer};
     use bifrost_llm::{
@@ -1214,7 +1265,8 @@ async fn run_conversion(
         providers.push(oc);
     }
     let policy = if live_llm {
-        RoutingPolicy::from_env()
+        // The tenant's saved routing policy (#158) wins; else the env default.
+        policy_override.unwrap_or_else(RoutingPolicy::from_env)
     } else {
         providers.push(&mock_llm);
         RoutingPolicy {
@@ -1284,6 +1336,7 @@ fn app(state: Shared) -> Router {
             "/api/connections/:id",
             axum::routing::delete(delete_connection),
         )
+        .route("/api/routing", get(get_routing).put(put_routing))
         .route("/api/proposals/:id/runbook", patch(set_runbook_item))
         .route("/api/jobs/convert", post(start_convert_job))
         .route("/api/jobs/:id", get(job_status))
@@ -1307,7 +1360,7 @@ fn required_role(method: &axum::http::Method, path: &str) -> Role {
     use axum::http::Method;
     // The org-wide compliance export and all connection/config management are
     // admin-only (sensitive, even to read).
-    if path == "/api/audit-pack" || path.starts_with("/api/connections") {
+    if path == "/api/audit-pack" || path.starts_with("/api/connections") || path == "/api/routing" {
         return Role::Admin;
     }
     match *method {
@@ -1486,7 +1539,7 @@ mod tests {
 
     #[tokio::test]
     async fn conversion_helper_produces_a_draft_proposal_and_runbook() {
-        let outcome = run_conversion("SARC-main", None)
+        let outcome = run_conversion("SARC-main", None, None)
             .await
             .expect("offline conversion succeeds");
         assert_eq!(outcome.proposal.status, ProposalStatus::Draft);
@@ -2103,6 +2156,34 @@ mod tests {
         assert!(
             pf.pipelines.iter().all(|p| !p.org.is_empty()),
             "every pipeline is org-tagged"
+        );
+    }
+
+    #[tokio::test]
+    async fn routing_policy_round_trips_per_tenant() {
+        let state = test_state();
+        // Default before any save.
+        let got = get_routing(State(state.clone()), admin()).await.unwrap().0;
+        assert!(got["policy"]["bulk"].is_array());
+
+        // Save a custom policy, then read it back.
+        let policy: bifrost_llm::RoutingPolicy = serde_json::from_value(serde_json::json!({
+            "bulk": ["ollama"],
+            "hard": ["anthropic", "ollama"],
+            "docs": ["anthropic"],
+        }))
+        .unwrap();
+        let _ = put_routing(State(state.clone()), admin(), Json(policy))
+            .await
+            .unwrap();
+        let back = get_routing(State(state.clone()), admin()).await.unwrap().0;
+        assert_eq!(back["policy"]["bulk"][0], "ollama");
+        assert_eq!(back["policy"]["hard"][1], "ollama");
+
+        // RBAC: routing is admin-only.
+        assert_eq!(
+            required_role(&axum::http::Method::PUT, "/api/routing"),
+            Role::Admin
         );
     }
 

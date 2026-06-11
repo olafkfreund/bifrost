@@ -180,7 +180,8 @@ async fn convert_one(
             error: None,
         };
     }
-    match crate::run_conversion(pipeline_id, project).await {
+    let policy = store.get_routing_policy(tenant).await.ok().flatten();
+    match crate::run_conversion(pipeline_id, project, policy).await {
         Ok(outcome) => {
             let rec = StoredProposal {
                 proposal: outcome.proposal,

@@ -176,7 +176,7 @@ pub enum TaskClass {
 
 /// Config-driven routing: an ordered provider-name preference per task class.
 /// The first preference that is *usable* (present, and local when air-gap) wins.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RoutingPolicy {
     /// Preference order for [`TaskClass::Bulk`].
     pub bulk: Vec<String>,
