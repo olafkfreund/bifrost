@@ -1,10 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { DiffEditor } from '@monaco-editor/react'
-import type { Monaco } from '@monaco-editor/react'
 import type { editor } from 'monaco-editor'
-import '../lib/monaco' // side-effect: bundle Monaco locally + register Gruvbox themes
+import { monaco } from '../lib/monaco' // configures Monaco locally + Gruvbox themes
 import type { BifrostApi } from '../api/client'
-import type { ConversionResult, Pipeline } from '../types'
+import type { ConversionResult, Pipeline, ProposalStatus } from '../types'
 import type { Theme } from '../lib/theme'
 import { checklistCategoryLabel, statusLabel } from '../lib/format'
 import { RiskBadge } from './RiskBadge'
@@ -22,16 +21,11 @@ function Section({ title, children, hint }: { title: string; children: React.Rea
 }
 
 /**
- * Highlight the model's contribution on the generated (right) side of the diff:
- * everything below the "REVIEW BEFORE USE" banner is tinted, and each
- * `# bifrost-gap-fill:` provenance line gets a gutter marker. Reviewers can see
- * at a glance which lines are the Importer's and which are Bifrost's.
+ * Provenance decorations for the generated (right) side of the diff: everything
+ * below the "REVIEW BEFORE USE" banner is tinted, and each `# bifrost-gap-fill:`
+ * line gets a gutter marker. Pure — returns the deltas to apply.
  */
-function decorateProvenance(diff: editor.IStandaloneDiffEditor, monaco: Monaco) {
-  const modified = diff.getModifiedEditor()
-  const model = modified.getModel()
-  if (!model) return
-
+function provenanceDecorations(model: editor.ITextModel): editor.IModelDeltaDecoration[] {
   const lines = model.getLinesContent()
   const bannerIdx = lines.findIndex((l) => l.includes('REVIEW BEFORE USE'))
   const decorations: editor.IModelDeltaDecoration[] = []
@@ -51,12 +45,10 @@ function decorateProvenance(diff: editor.IStandaloneDiffEditor, monaco: Monaco) 
       })
     }
   })
-
-  modified.createDecorationsCollection(decorations)
+  return decorations
 }
 
 const DIFF_OPTIONS: editor.IStandaloneDiffEditorConstructionOptions = {
-  readOnly: true,
   renderSideBySide: true,
   minimap: { enabled: false },
   scrollBeyondLastLine: false,
@@ -67,12 +59,28 @@ const DIFF_OPTIONS: editor.IStandaloneDiffEditorConstructionOptions = {
   guides: { indentation: false },
 }
 
+function btn(kind: 'primary' | 'ghost' | 'danger') {
+  const base = 'rounded-lg px-4 py-2 text-sm font-medium transition disabled:opacity-50'
+  if (kind === 'primary') return `${base} bg-brand-500 text-ink-950 hover:bg-brand-400`
+  if (kind === 'danger') return `${base} border border-[var(--color-risk-amber)]/50 text-[var(--color-risk-amber)] hover:bg-ink-850`
+  return `${base} border border-ink-700 text-ink-200 hover:bg-ink-850`
+}
+
+type PanelState = {
+  for: string | null
+  status: 'loading' | 'ok' | 'error'
+  result?: ConversionResult
+  error?: string
+  editMode?: boolean
+  busy?: boolean
+  actionError?: string
+}
+
 /**
- * The proposal review surface for a single pipeline: a three-pane diff —
- * ADO source (left) vs. the generated, provenance-highlighted Actions workflow
- * (right), with the LLM rationale, deterministic risk-factor breakdown, verify
- * steps, and manual-task runbook in the rail. Approve / request-changes lands
- * next (#52).
+ * The proposal review surface: a three-pane diff (ADO source vs. the generated,
+ * provenance-highlighted workflow) with the rationale, risk-factor breakdown,
+ * runbook, and audit trail in the rail — plus the lifecycle actions (submit /
+ * approve / request changes / edit), which drive the state machine and audit log.
  */
 export function ProposalPanel({
   pipeline,
@@ -85,14 +93,34 @@ export function ProposalPanel({
   theme: Theme
   onClose: () => void
 }) {
-  // Keyed by pipeline id so a stale fetch never paints over the current one,
-  // and so we never setState synchronously in the effect body.
-  const [state, setState] = useState<{
-    for: string | null
-    status: 'loading' | 'ok' | 'error'
-    result?: ConversionResult
-    error?: string
-  }>({ for: null, status: 'loading' })
+  const [state, setState] = useState<PanelState>({ for: null, status: 'loading' })
+  const diffRef = useRef<editor.IStandaloneDiffEditor | null>(null)
+  const decoRef = useRef<editor.IEditorDecorationsCollection | null>(null)
+  const modelsRef = useRef<{ original: editor.ITextModel | null; modified: editor.ITextModel | null }>({
+    original: null,
+    modified: null,
+  })
+
+  // On unmount the child DiffEditor is torn down first (with its models kept);
+  // only then do we dispose the models, so the disposal can't race the widget.
+  useEffect(
+    () => () => {
+      modelsRef.current.original?.dispose()
+      modelsRef.current.modified?.dispose()
+      modelsRef.current = { original: null, modified: null }
+    },
+    [],
+  )
+
+  // (Re)apply provenance highlighting, reusing one collection so edits refresh
+  // it rather than stacking stale decorations.
+  const applyProvenance = (diff: editor.IStandaloneDiffEditor) => {
+    const model = diff.getModifiedEditor().getModel()
+    if (!model) return
+    const decorations = provenanceDecorations(model)
+    if (decoRef.current) decoRef.current.set(decorations)
+    else decoRef.current = diff.getModifiedEditor().createDecorationsCollection(decorations)
+  }
 
   useEffect(() => {
     if (!pipeline) return
@@ -107,13 +135,44 @@ export function ProposalPanel({
     }
   }, [pipeline, api])
 
+  // Refresh provenance highlighting when the generated workflow changes (edits).
+  useEffect(() => {
+    if (diffRef.current) applyProvenance(diffRef.current)
+  }, [state.result?.proposal.proposedYaml])
+
   if (!pipeline) return null
-  const current = state.for === pipeline.id ? state : null
+  const id = pipeline.id
+  const current = state.for === id ? state : null
   const loading = !current || current.status === 'loading'
   const error = current?.status === 'error' ? current.error : null
   const result = current?.status === 'ok' ? current.result : null
   const proposal = result?.proposal
+  const editMode = current?.editMode ?? false
+  const busy = current?.busy ?? false
+  const actionError = current?.actionError
   const monacoTheme = theme === 'dark' ? 'bifrost-dark' : 'bifrost-light'
+
+  // Run a lifecycle/edit action, folding the result back into the keyed state.
+  async function runAction(fn: () => Promise<ConversionResult>) {
+    setState((s) => (s.for === id ? { ...s, busy: true, actionError: undefined } : s))
+    try {
+      const r = await fn()
+      setState((s) => (s.for === id ? { ...s, status: 'ok', result: r, busy: false, editMode: false } : s))
+    } catch (e) {
+      setState((s) => (s.for === id ? { ...s, busy: false, actionError: String(e) } : s))
+    }
+  }
+
+  const transition = (to: ProposalStatus) => proposal && runAction(() => api.transitionProposal(proposal.id, to))
+  const startEdit = () => setState((s) => (s.for === id ? { ...s, editMode: true, actionError: undefined } : s))
+  const cancelEdit = () => {
+    if (proposal) diffRef.current?.getModifiedEditor().setValue(proposal.proposedYaml)
+    setState((s) => (s.for === id ? { ...s, editMode: false, actionError: undefined } : s))
+  }
+  const saveEdit = () => {
+    const yaml = diffRef.current?.getModifiedEditor().getValue()
+    if (yaml != null && proposal) runAction(() => api.editProposal(proposal.id, yaml))
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex">
@@ -128,9 +187,7 @@ export function ProposalPanel({
               <RiskBadge band={proposal?.riskBand ?? pipeline.riskBand} score={proposal?.riskScore ?? pipeline.riskScore} />
               {proposal && (
                 <>
-                  <span className="rounded-full bg-ink-800 px-2 py-0.5 text-xs text-ink-300">
-                    {statusLabel[proposal.status]}
-                  </span>
+                  <span className="rounded-full bg-ink-800 px-2 py-0.5 text-xs text-ink-300">{statusLabel[proposal.status]}</span>
                   <span className="rounded-full bg-ink-800 px-2 py-0.5 text-xs text-ink-300">prompt {proposal.promptId}</span>
                   <span className="rounded-full bg-ink-800 px-2 py-0.5 text-xs text-ink-300">
                     confidence {Math.round(proposal.confidence * 100)}%
@@ -156,7 +213,12 @@ export function ProposalPanel({
                 ADO source · <span className="font-mono text-ink-200">azure-pipelines.yml</span>
               </div>
               <div className="flex-1 px-4 py-2 font-medium text-ink-300">
-                Generated workflow · <span style={{ color: 'var(--color-accent-aqua)' }}>provenance-highlighted</span>
+                Generated workflow ·{' '}
+                {editMode ? (
+                  <span style={{ color: 'var(--color-accent-aqua)' }}>editing — your changes save to the proposal</span>
+                ) : (
+                  <span style={{ color: 'var(--color-accent-aqua)' }}>provenance-highlighted</span>
+                )}
               </div>
             </div>
             <div className="min-h-0 flex-1">
@@ -173,8 +235,26 @@ export function ProposalPanel({
                   theme={monacoTheme}
                   original={proposal.sourceYaml}
                   modified={proposal.proposedYaml}
-                  options={DIFF_OPTIONS}
-                  onMount={(ed, monaco) => decorateProvenance(ed, monaco)}
+                  // Keep the models on unmount: @monaco-editor/react otherwise
+                  // disposes them while the diff widget is still resetting, which
+                  // throws "TextModel got disposed before DiffEditorWidget model
+                  // got reset" when the panel closes. We dispose them ourselves
+                  // in the cleanup below, after the widget is gone.
+                  keepCurrentOriginalModel
+                  keepCurrentModifiedModel
+                  options={{ ...DIFF_OPTIONS, readOnly: !editMode }}
+                  onMount={(ed) => {
+                    // Dispose the previous open's kept models (their widget is
+                    // long gone, so this can't race) — bounds the leak to one.
+                    modelsRef.current.original?.dispose()
+                    modelsRef.current.modified?.dispose()
+                    diffRef.current = ed
+                    modelsRef.current = {
+                      original: ed.getOriginalEditor().getModel(),
+                      modified: ed.getModifiedEditor().getModel(),
+                    }
+                    applyProvenance(ed)
+                  }}
                 />
               )}
             </div>
@@ -238,9 +318,7 @@ export function ProposalPanel({
 
                 <Section
                   title="Manual-task runbook"
-                  hint={`${result?.runbook.items.length ?? 0} item${
-                    (result?.runbook.items.length ?? 0) === 1 ? '' : 's'
-                  }`}
+                  hint={`${result?.runbook.items.length ?? 0} item${(result?.runbook.items.length ?? 0) === 1 ? '' : 's'}`}
                 >
                   {result && result.runbook.items.length > 0 ? (
                     <ul className="space-y-2">
@@ -262,6 +340,34 @@ export function ProposalPanel({
                     <p className="text-sm text-ink-300">No manual tasks — the Importer covered everything.</p>
                   )}
                 </Section>
+
+                <Section title="Audit trail" hint={`${result?.audit.length ?? 0} event${(result?.audit.length ?? 0) === 1 ? '' : 's'}`}>
+                  {result && result.audit.length > 0 ? (
+                    <ol className="space-y-2">
+                      {result.audit.map((e, i) => (
+                        <li key={i} className="flex gap-2 text-xs">
+                          <span className="mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-brand-400" />
+                          <div className="min-w-0">
+                            <div className="text-ink-200">
+                              {e.note ? (
+                                <span>edited workflow</span>
+                              ) : (
+                                <span>
+                                  {statusLabel[e.from]} <span className="text-ink-500">→</span> {statusLabel[e.to]}
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-ink-500">
+                              {e.actor} · {new Date(e.at).toLocaleString()}
+                            </div>
+                          </div>
+                        </li>
+                      ))}
+                    </ol>
+                  ) : (
+                    <p className="text-sm text-ink-300">No actions yet — submit for review to begin.</p>
+                  )}
+                </Section>
               </>
             )}
           </aside>
@@ -269,13 +375,75 @@ export function ProposalPanel({
 
         {/* action bar */}
         <div className="shrink-0 border-t border-ink-800 p-4">
-          <button
-            disabled
-            title="Approve / request changes lands in M3 (#52)"
-            className="w-full cursor-not-allowed rounded-lg border border-ink-700 bg-ink-850 px-4 py-2 text-sm font-medium text-ink-300"
-          >
-            Approve · edit · request changes — coming in M3
-          </button>
+          {actionError && (
+            <div className="mb-3 rounded-md border border-[var(--color-risk-red)]/40 bg-[var(--color-risk-red-dim)] px-3 py-2 text-xs text-[var(--color-risk-red)]">
+              {actionError}
+            </div>
+          )}
+          <div className="flex flex-wrap items-center gap-2">
+            {proposal && editMode && (
+              <>
+                <button className={btn('primary')} disabled={busy} onClick={saveEdit}>
+                  {busy ? 'Saving…' : 'Save changes'}
+                </button>
+                <button className={btn('ghost')} disabled={busy} onClick={cancelEdit}>
+                  Cancel
+                </button>
+                <span className="text-xs text-ink-300">Edit the right pane, then save — recorded in the audit log.</span>
+              </>
+            )}
+
+            {proposal && !editMode && proposal.status === 'draft' && (
+              <>
+                <button className={btn('primary')} disabled={busy} onClick={() => transition('in_review')}>
+                  Submit for review
+                </button>
+                <button className={btn('ghost')} disabled={busy} onClick={startEdit}>
+                  Edit workflow
+                </button>
+              </>
+            )}
+
+            {proposal && !editMode && proposal.status === 'in_review' && (
+              <>
+                <button className={btn('primary')} disabled={busy} onClick={() => transition('approved')}>
+                  Approve
+                </button>
+                <button className={btn('danger')} disabled={busy} onClick={() => transition('changes_requested')}>
+                  Request changes
+                </button>
+                <button className={btn('ghost')} disabled={busy} onClick={startEdit}>
+                  Edit workflow
+                </button>
+              </>
+            )}
+
+            {proposal && !editMode && proposal.status === 'changes_requested' && (
+              <>
+                <button className={btn('primary')} disabled={busy} onClick={() => transition('in_review')}>
+                  Resubmit for review
+                </button>
+                <button className={btn('ghost')} disabled={busy} onClick={startEdit}>
+                  Edit workflow
+                </button>
+              </>
+            )}
+
+            {proposal && !editMode && proposal.status === 'approved' && (
+              <>
+                <span className="text-sm font-medium" style={{ color: 'var(--color-accent-aqua)' }}>
+                  ✓ Approved — ready to commit
+                </span>
+                <button className={btn('ghost')} disabled title="Commit & open PR lands in M4 (#56)">
+                  Commit &amp; open PR — M4
+                </button>
+              </>
+            )}
+
+            {proposal && !editMode && (proposal.status === 'committed' || proposal.status === 'validated') && (
+              <span className="text-sm font-medium text-ink-200">{statusLabel[proposal.status]}</span>
+            )}
+          </div>
         </div>
       </div>
     </div>

@@ -25,6 +25,11 @@ pub struct AuditEvent {
     pub to: ProposalStatus,
     /// Caller-supplied ISO-8601 timestamp (the core does not read a clock).
     pub at: String,
+    /// Optional human note. Lifecycle transitions leave this empty; content
+    /// actions that don't move state (e.g. an edit, where `from == to`) use it
+    /// to say what happened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// An append-only log of [`AuditEvent`]s. Events can be added and read, never

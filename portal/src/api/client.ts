@@ -1,4 +1,4 @@
-import type { ConversionResult, Portfolio } from '../types'
+import type { AuditEvent, ConversionResult, Portfolio, ProposalStatus } from '../types'
 import { mockPortfolio } from '../data/portfolio'
 
 // The portal depends only on this interface. Today it's backed by mock fixtures;
@@ -7,7 +7,24 @@ import { mockPortfolio } from '../data/portfolio'
 export interface BifrostApi {
   getPortfolio(): Promise<Portfolio>
   convertPipeline(id: string): Promise<ConversionResult>
+  /** Move a proposal through the lifecycle state machine (audit-logged). */
+  transitionProposal(proposalId: string, to: ProposalStatus, actor?: string): Promise<ConversionResult>
+  /** Replace a proposal's workflow with a reviewer edit (audit-logged). */
+  editProposal(proposalId: string, proposedYaml: string, actor?: string): Promise<ConversionResult>
 }
+
+/** Legal lifecycle edges — mirrors `is_legal_transition` in bifrost-core. */
+const LEGAL: Record<ProposalStatus, ProposalStatus[]> = {
+  not_started: [],
+  draft: ['in_review'],
+  in_review: ['approved', 'changes_requested'],
+  changes_requested: ['in_review'],
+  approved: ['committed'],
+  committed: ['validated'],
+  validated: [],
+}
+/** States in which the workflow can still be edited (mirrors `record_edit`). */
+const EDITABLE: ProposalStatus[] = ['draft', 'in_review', 'changes_requested']
 
 /** Synthesize a representative proposal so the mock client exercises the UI. */
 function mockConversion(id: string): ConversionResult {
@@ -51,10 +68,15 @@ function mockConversion(id: string): ConversionResult {
         },
       ],
     },
+    audit: [],
   }
 }
 
 class MockBifrostApi implements BifrostApi {
+  // Keep converted proposals in memory so transitions/edits persist across
+  // re-opens within a session — the same behaviour the server's store gives.
+  private readonly store = new Map<string, ConversionResult>()
+
   async getPortfolio(): Promise<Portfolio> {
     // Simulate a little latency so loading states are exercised.
     await new Promise((r) => setTimeout(r, 350))
@@ -63,7 +85,45 @@ class MockBifrostApi implements BifrostApi {
 
   async convertPipeline(id: string): Promise<ConversionResult> {
     await new Promise((r) => setTimeout(r, 400))
-    return mockConversion(id)
+    const key = `prop-${id}`
+    let rec = this.store.get(key)
+    if (!rec) {
+      rec = mockConversion(id)
+      this.store.set(key, rec)
+    }
+    return structuredClone(rec)
+  }
+
+  private record(proposalId: string): ConversionResult {
+    const rec = this.store.get(proposalId)
+    if (!rec) throw new Error(`no proposal '${proposalId}'`)
+    return rec
+  }
+
+  private log(rec: ConversionResult, from: ProposalStatus, to: ProposalStatus, actor: string, note?: string) {
+    const event: AuditEvent = { proposalId: rec.proposal.id, actor, from, to, at: new Date().toISOString() }
+    if (note) event.note = note
+    rec.audit.push(event)
+  }
+
+  async transitionProposal(proposalId: string, to: ProposalStatus, actor = 'reviewer@portal'): Promise<ConversionResult> {
+    await new Promise((r) => setTimeout(r, 150))
+    const rec = this.record(proposalId)
+    const from = rec.proposal.status
+    if (!LEGAL[from].includes(to)) throw new Error(`illegal proposal transition: ${from} → ${to}`)
+    rec.proposal.status = to
+    this.log(rec, from, to, actor)
+    return structuredClone(rec)
+  }
+
+  async editProposal(proposalId: string, proposedYaml: string, actor = 'reviewer@portal'): Promise<ConversionResult> {
+    await new Promise((r) => setTimeout(r, 150))
+    const rec = this.record(proposalId)
+    const status = rec.proposal.status
+    if (!EDITABLE.includes(status)) throw new Error(`proposal is not editable in state ${status}`)
+    rec.proposal.proposedYaml = proposedYaml
+    this.log(rec, status, status, actor, 'edited proposed_yaml')
+    return structuredClone(rec)
   }
 }
 
@@ -84,6 +144,26 @@ class HttpBifrostApi implements BifrostApi {
       method: 'POST',
     })
     if (!res.ok) throw new Error(`convert request failed: ${res.status}`)
+    return (await res.json()) as ConversionResult
+  }
+
+  async transitionProposal(proposalId: string, to: ProposalStatus, actor = 'reviewer@portal'): Promise<ConversionResult> {
+    const res = await fetch(`${this.base}/proposals/${encodeURIComponent(proposalId)}/transition`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ to, actor }),
+    })
+    if (!res.ok) throw new Error(`${res.status}: ${(await res.text()) || 'transition failed'}`)
+    return (await res.json()) as ConversionResult
+  }
+
+  async editProposal(proposalId: string, proposedYaml: string, actor = 'reviewer@portal'): Promise<ConversionResult> {
+    const res = await fetch(`${this.base}/proposals/${encodeURIComponent(proposalId)}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ proposedYaml, actor }),
+    })
+    if (!res.ok) throw new Error(`${res.status}: ${(await res.text()) || 'edit failed'}`)
     return (await res.json()) as ConversionResult
   }
 }
