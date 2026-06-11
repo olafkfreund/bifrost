@@ -116,6 +116,8 @@ export interface Proposal {
   promptId: string
   confidence: number
   status: ProposalStatus
+  /** URL of the PR opened when the workflow was committed (set on commit). */
+  prUrl?: string
 }
 
 /** One immutable entry in a proposal's attestation trail. */

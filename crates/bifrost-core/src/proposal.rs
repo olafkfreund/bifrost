@@ -48,6 +48,9 @@ pub struct Proposal {
     pub confidence: f64,
     /// Where the proposal sits in the review lifecycle.
     pub status: ProposalStatus,
+    /// URL of the PR opened when the workflow was committed (set on commit).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
 }
 
 impl Proposal {
@@ -81,6 +84,7 @@ impl Proposal {
             prompt_id: prompt_id.into(),
             confidence,
             status: ProposalStatus::Draft,
+            pr_url: None,
         }
     }
 

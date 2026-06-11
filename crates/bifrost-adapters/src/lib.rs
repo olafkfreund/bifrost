@@ -9,6 +9,7 @@ pub mod convert;
 pub mod docker_importer;
 pub mod importer;
 pub mod orchestrator;
+pub mod publisher;
 pub mod source;
 
 pub use azure_devops::AzureDevOpsAdapter;
@@ -16,4 +17,7 @@ pub use convert::{convert_pipeline, ConversionError, ConversionOutcome};
 pub use docker_importer::DockerImporter;
 pub use importer::{parse_audit_summary, parse_dry_run, Importer, ImporterError, MockImporter};
 pub use orchestrator::{audit_org, audit_portfolio, AuditConfig, OrchestrationError};
+pub use publisher::{
+    CommitRequest, CommitResult, GitHubPublisher, MockPublisher, PublishError, Publisher,
+};
 pub use source::{AdapterError, MockSourceAdapter, SourceAdapter};
