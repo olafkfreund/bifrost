@@ -82,6 +82,10 @@ pub struct Proposal {
     pub prompt_id: String,
     /// The model's certainty in its proposed YAML (0.0–1.0) — NOT a risk score.
     pub confidence: f64,
+    /// Distinct LLM providers that produced the gap-fills (model provenance,
+    /// #159) — e.g. `["ollama"]` proves only a local model touched this pipeline.
+    #[serde(default)]
+    pub llm_providers: Vec<String>,
     /// Where the proposal sits in the review lifecycle.
     pub status: ProposalStatus,
     /// URL of the PR opened when the workflow was committed (set on commit).
@@ -123,6 +127,7 @@ impl Proposal {
             risk_score: assessment.score,
             prompt_id: prompt_id.into(),
             confidence,
+            llm_providers: Vec::new(),
             status: ProposalStatus::Draft,
             pr_url: None,
             parity: None,
