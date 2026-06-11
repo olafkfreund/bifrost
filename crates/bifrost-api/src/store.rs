@@ -18,6 +18,7 @@ use async_trait::async_trait;
 use bifrost_core::{
     AuditEvent, AuditLog, ConfigEvent, Connection, Proposal, ProposalStatus, Runbook,
 };
+use bifrost_llm::RoutingPolicy;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{PgPool, Row, SqlitePool};
@@ -54,6 +55,11 @@ pub trait ProposalStore: Send + Sync {
     async fn append_config_event(&self, ev: &ConfigEvent) -> anyhow::Result<()>;
     /// A tenant's config-change history, oldest first.
     async fn list_config_events(&self, tenant: &str) -> anyhow::Result<Vec<ConfigEvent>>;
+
+    /// Upsert a tenant's LLM routing policy (#158).
+    async fn put_routing_policy(&self, tenant: &str, policy: &RoutingPolicy) -> anyhow::Result<()>;
+    /// A tenant's routing policy, if one has been set.
+    async fn get_routing_policy(&self, tenant: &str) -> anyhow::Result<Option<RoutingPolicy>>;
 }
 
 /// Resolve the store from the environment via `BIFROST_DB`:
@@ -102,6 +108,7 @@ pub struct InMemoryStore {
     inner: RwLock<HashMap<String, StoredProposal>>,
     connections: RwLock<HashMap<String, Connection>>,
     config_events: RwLock<Vec<ConfigEvent>>,
+    routing: RwLock<HashMap<String, RoutingPolicy>>,
 }
 
 #[async_trait]
@@ -159,6 +166,16 @@ impl ProposalStore for InMemoryStore {
             .filter(|e| e.tenant == tenant)
             .cloned()
             .collect())
+    }
+    async fn put_routing_policy(&self, tenant: &str, policy: &RoutingPolicy) -> anyhow::Result<()> {
+        self.routing
+            .write()
+            .await
+            .insert(tenant.to_string(), policy.clone());
+        Ok(())
+    }
+    async fn get_routing_policy(&self, tenant: &str) -> anyhow::Result<Option<RoutingPolicy>> {
+        Ok(self.routing.read().await.get(tenant).cloned())
     }
 }
 
@@ -249,6 +266,14 @@ impl SqliteStore {
             "CREATE TABLE IF NOT EXISTS config_audit (
                 seq    INTEGER PRIMARY KEY AUTOINCREMENT,
                 tenant TEXT NOT NULL,
+                doc    TEXT NOT NULL
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS routing_policy (
+                tenant TEXT PRIMARY KEY,
                 doc    TEXT NOT NULL
             )",
         )
@@ -411,6 +436,29 @@ impl ProposalStore for SqliteStore {
             .map(|r| Ok(serde_json::from_str(&r.get::<String, _>("doc"))?))
             .collect()
     }
+
+    async fn put_routing_policy(&self, tenant: &str, policy: &RoutingPolicy) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO routing_policy (tenant, doc) VALUES (?, ?)
+             ON CONFLICT(tenant) DO UPDATE SET doc = excluded.doc",
+        )
+        .bind(tenant)
+        .bind(serde_json::to_string(policy)?)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_routing_policy(&self, tenant: &str) -> anyhow::Result<Option<RoutingPolicy>> {
+        let row = sqlx::query("SELECT doc FROM routing_policy WHERE tenant = ?")
+            .bind(tenant)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(match row {
+            Some(r) => Some(serde_json::from_str(&r.get::<String, _>("doc"))?),
+            None => None,
+        })
+    }
 }
 
 // ── Postgres ──────────────────────────────────────────────────────────────────
@@ -480,6 +528,14 @@ impl PgStore {
             "CREATE TABLE IF NOT EXISTS config_audit (
                 seq    BIGSERIAL PRIMARY KEY,
                 tenant TEXT NOT NULL,
+                doc    TEXT NOT NULL
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS routing_policy (
+                tenant TEXT PRIMARY KEY,
                 doc    TEXT NOT NULL
             )",
         )
@@ -641,6 +697,29 @@ impl ProposalStore for PgStore {
         rows.into_iter()
             .map(|r| Ok(serde_json::from_str(&r.get::<String, _>("doc"))?))
             .collect()
+    }
+
+    async fn put_routing_policy(&self, tenant: &str, policy: &RoutingPolicy) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO routing_policy (tenant, doc) VALUES ($1, $2)
+             ON CONFLICT (tenant) DO UPDATE SET doc = EXCLUDED.doc",
+        )
+        .bind(tenant)
+        .bind(serde_json::to_string(policy)?)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_routing_policy(&self, tenant: &str) -> anyhow::Result<Option<RoutingPolicy>> {
+        let row = sqlx::query("SELECT doc FROM routing_policy WHERE tenant = $1")
+            .bind(tenant)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(match row {
+            Some(r) => Some(serde_json::from_str(&r.get::<String, _>("doc"))?),
+            None => None,
+        })
     }
 }
 
