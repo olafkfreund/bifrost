@@ -15,6 +15,10 @@ pub mod publisher;
 pub mod source;
 pub mod validate;
 
+/// Centralized fixture loader for tests (#17). Test-only.
+#[cfg(test)]
+mod test_fixtures;
+
 pub use azure_devops::AzureDevOpsAdapter;
 pub use baseline::{
     AzureDevOpsBaseline, BaselineError, BaselineRequest, BaselineSource, MockBaselineSource,
