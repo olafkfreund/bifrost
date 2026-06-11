@@ -42,7 +42,7 @@ export function StatCards({ summary }: { summary: PortfolioSummary }) {
       <Card
         label="Pipelines"
         value={t.pipelines}
-        sub={`${t.projects} projects · ${t.yaml} YAML · ${t.classic} classic`}
+        sub={`${t.orgs && t.orgs > 1 ? `${t.orgs} orgs · ` : ''}${t.projects} projects · ${t.yaml} YAML · ${t.classic} classic`}
       />
       <div className="rounded-xl border border-ink-800 bg-ink-900/50 p-4">
         <div className="text-xs font-medium uppercase tracking-wide text-ink-300">Risk profile</div>
