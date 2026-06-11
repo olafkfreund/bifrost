@@ -45,6 +45,8 @@ pub async fn audit_org(
     config: AuditConfig,
 ) -> Result<Portfolio, OrchestrationError> {
     let sources = adapter.enumerate_pipelines().await?;
+    // Forecast is supplementary — a failure must not abort the audit.
+    let forecast = importer.forecast().await.unwrap_or_default();
     let mut pipelines = Vec::with_capacity(sources.len());
 
     for src in sources {
@@ -52,18 +54,20 @@ pub async fn audit_org(
         let signals = signals_from_dry_run(&dry_run, src.classification);
         let meta = PipelineMeta {
             id: src.id,
-            name: src.name,
+            name: src.name.clone(),
             project: src.project,
             status: ProposalStatus::NotStarted,
             unsupported_steps: dry_run.gaps_of(GapKind::UnsupportedStep).count() as u32,
             manual_tasks: dry_run.gaps_of(GapKind::ManualTask).count() as u32,
-            // Forecast comes from the Importer `forecast` command (not yet wrapped).
-            forecast_minutes: 0,
+            forecast_minutes: forecast_for(&forecast, &src.name),
         };
         pipelines.push(build_pipeline(meta, &signals));
     }
 
-    let totals = Portfolio::totals_from(&pipelines);
+    let mut totals = Portfolio::totals_from(&pipelines);
+    if forecast.total_minutes > 0 {
+        totals.forecast_minutes = forecast.total_minutes;
+    }
     Ok(Portfolio {
         summary: PortfolioSummary {
             org: config.org,
@@ -75,6 +79,16 @@ pub async fn audit_org(
         },
         pipelines,
     })
+}
+
+/// The forecast estimate for a pipeline by name (0 when the report doesn't list it).
+fn forecast_for(forecast: &crate::Forecast, name: &str) -> u32 {
+    forecast
+        .per_pipeline
+        .iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, m)| *m)
+        .unwrap_or(0)
 }
 
 /// Build a [`Portfolio`] from a single org **audit** plus the adapter inventory —
@@ -89,6 +103,7 @@ pub async fn audit_portfolio(
 ) -> Result<Portfolio, OrchestrationError> {
     let sources = adapter.enumerate_pipelines().await?;
     let audit = importer.audit().await?;
+    let forecast = importer.forecast().await.unwrap_or_default();
     let connections = adapter.fetch_service_connections().await?;
     let groups = adapter.fetch_variable_groups().await?;
 
@@ -116,17 +131,20 @@ pub async fn audit_portfolio(
         };
         let meta = PipelineMeta {
             id: src.id,
-            name: src.name,
+            name: src.name.clone(),
             project: src.project,
             status: ProposalStatus::NotStarted,
             unsupported_steps: audit.build_steps.unsupported,
             manual_tasks: audit.manual_tasks.len() as u32,
-            forecast_minutes: 0,
+            forecast_minutes: forecast_for(&forecast, &src.name),
         };
         pipelines.push(build_pipeline(meta, &signals));
     }
 
-    let totals = Portfolio::totals_from(&pipelines);
+    let mut totals = Portfolio::totals_from(&pipelines);
+    if forecast.total_minutes > 0 {
+        totals.forecast_minutes = forecast.total_minutes;
+    }
     Ok(Portfolio {
         summary: PortfolioSummary {
             org: config.org,
@@ -201,5 +219,14 @@ mod tests {
             .unwrap();
         let t = &portfolio.summary.totals;
         assert_eq!(t.green + t.amber + t.red, t.pipelines);
+    }
+
+    #[tokio::test]
+    async fn forecast_total_flows_into_portfolio_totals() {
+        // MockImporter's forecast fixture reports 23,500 runner-minutes/month.
+        let portfolio = audit_org(&MockSourceAdapter::new(), &MockImporter, config())
+            .await
+            .unwrap();
+        assert_eq!(portfolio.summary.totals.forecast_minutes, 23_500);
     }
 }
