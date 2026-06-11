@@ -15,7 +15,9 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bifrost_core::{AuditEvent, AuditLog, Connection, Proposal, ProposalStatus, Runbook};
+use bifrost_core::{
+    AuditEvent, AuditLog, ConfigEvent, Connection, Proposal, ProposalStatus, Runbook,
+};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{PgPool, Row, SqlitePool};
@@ -47,6 +49,11 @@ pub trait ProposalStore: Send + Sync {
     async fn list_connections(&self, tenant: &str) -> anyhow::Result<Vec<Connection>>;
     /// Delete a tenant's connection by id; `true` if one was removed.
     async fn delete_connection(&self, tenant: &str, id: &str) -> anyhow::Result<bool>;
+
+    /// Append a config-change event (#159). Append-only — for the compliance pack.
+    async fn append_config_event(&self, ev: &ConfigEvent) -> anyhow::Result<()>;
+    /// A tenant's config-change history, oldest first.
+    async fn list_config_events(&self, tenant: &str) -> anyhow::Result<Vec<ConfigEvent>>;
 }
 
 /// Resolve the store from the environment via `BIFROST_DB`:
@@ -94,6 +101,7 @@ pub async fn from_env() -> Arc<dyn ProposalStore> {
 pub struct InMemoryStore {
     inner: RwLock<HashMap<String, StoredProposal>>,
     connections: RwLock<HashMap<String, Connection>>,
+    config_events: RwLock<Vec<ConfigEvent>>,
 }
 
 #[async_trait]
@@ -137,6 +145,20 @@ impl ProposalStore for InMemoryStore {
             }
             _ => Ok(false),
         }
+    }
+    async fn append_config_event(&self, ev: &ConfigEvent) -> anyhow::Result<()> {
+        self.config_events.write().await.push(ev.clone());
+        Ok(())
+    }
+    async fn list_config_events(&self, tenant: &str) -> anyhow::Result<Vec<ConfigEvent>> {
+        Ok(self
+            .config_events
+            .read()
+            .await
+            .iter()
+            .filter(|e| e.tenant == tenant)
+            .cloned()
+            .collect())
     }
 }
 
@@ -217,6 +239,15 @@ impl SqliteStore {
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS connections (
                 id     TEXT PRIMARY KEY,
+                tenant TEXT NOT NULL,
+                doc    TEXT NOT NULL
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS config_audit (
+                seq    INTEGER PRIMARY KEY AUTOINCREMENT,
                 tenant TEXT NOT NULL,
                 doc    TEXT NOT NULL
             )",
@@ -361,6 +392,25 @@ impl ProposalStore for SqliteStore {
             .await?;
         Ok(res.rows_affected() > 0)
     }
+
+    async fn append_config_event(&self, ev: &ConfigEvent) -> anyhow::Result<()> {
+        sqlx::query("INSERT INTO config_audit (tenant, doc) VALUES (?, ?)")
+            .bind(&ev.tenant)
+            .bind(serde_json::to_string(ev)?)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn list_config_events(&self, tenant: &str) -> anyhow::Result<Vec<ConfigEvent>> {
+        let rows = sqlx::query("SELECT doc FROM config_audit WHERE tenant = ? ORDER BY seq")
+            .bind(tenant)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter()
+            .map(|r| Ok(serde_json::from_str(&r.get::<String, _>("doc"))?))
+            .collect()
+    }
 }
 
 // ── Postgres ──────────────────────────────────────────────────────────────────
@@ -420,6 +470,15 @@ impl PgStore {
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS connections (
                 id     TEXT PRIMARY KEY,
+                tenant TEXT NOT NULL,
+                doc    TEXT NOT NULL
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS config_audit (
+                seq    BIGSERIAL PRIMARY KEY,
                 tenant TEXT NOT NULL,
                 doc    TEXT NOT NULL
             )",
@@ -563,6 +622,25 @@ impl ProposalStore for PgStore {
             .execute(&self.pool)
             .await?;
         Ok(res.rows_affected() > 0)
+    }
+
+    async fn append_config_event(&self, ev: &ConfigEvent) -> anyhow::Result<()> {
+        sqlx::query("INSERT INTO config_audit (tenant, doc) VALUES ($1, $2)")
+            .bind(&ev.tenant)
+            .bind(serde_json::to_string(ev)?)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn list_config_events(&self, tenant: &str) -> anyhow::Result<Vec<ConfigEvent>> {
+        let rows = sqlx::query("SELECT doc FROM config_audit WHERE tenant = $1 ORDER BY seq")
+            .bind(tenant)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter()
+            .map(|r| Ok(serde_json::from_str(&r.get::<String, _>("doc"))?))
+            .collect()
     }
 }
 

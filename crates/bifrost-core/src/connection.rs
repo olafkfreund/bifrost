@@ -130,6 +130,39 @@ impl Connection {
             ..self.clone()
         }
     }
+
+    /// The connection kind as a stable label (no secrets) for the config audit.
+    pub fn kind_label(&self) -> &'static str {
+        match self.kind {
+            ConnectionKind::AzureDevOps { .. } => "azure-devops",
+            ConnectionKind::GitHub { .. } => "github",
+            ConnectionKind::Llm { .. } => "llm",
+        }
+    }
+}
+
+/// What happened to a connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigAction {
+    Upserted,
+    Deleted,
+}
+
+/// An append-only config-change record (#159): who changed which connection,
+/// when, and how — never any secret material. Included in the compliance pack so
+/// an auditor sees the full configuration history.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigEvent {
+    pub tenant: String,
+    pub action: ConfigAction,
+    pub connection_id: String,
+    pub connection_name: String,
+    pub kind: String,
+    pub actor: String,
+    /// Caller-supplied ISO-8601 timestamp (the core is clock-free).
+    pub at: String,
 }
 
 #[cfg(test)]
