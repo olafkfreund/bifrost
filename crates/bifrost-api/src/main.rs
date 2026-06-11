@@ -1054,6 +1054,7 @@ async fn run_conversion(
     use bifrost_adapters::{DockerImporter, Importer};
     use bifrost_llm::{
         AnthropicProvider, CopilotProvider, GeminiProvider, LlmProvider, OllamaProvider,
+        OpenAiCompatibleProvider,
     };
 
     let truthy = |v: String| matches!(v.as_str(), "1" | "true" | "yes");
@@ -1080,9 +1081,20 @@ async fn run_conversion(
         .and_then(Result::ok);
     let ollama = (live && (air_gap || std::env::var("OLLAMA_BASE_URL").is_ok()))
         .then(OllamaProvider::from_env);
+    // Generic OpenAI-compatible endpoint (#155): Antigravity, vLLM, a local
+    // Gemma, Ollama's /v1 … Gated on its base URL (not the frontier `!air_gap`
+    // gate) — its own `is_local` flag decides whether the Router uses it in
+    // air-gap mode.
+    let openai_compat = (live && std::env::var("BIFROST_OPENAI_BASE_URL").is_ok())
+        .then(OpenAiCompatibleProvider::from_env)
+        .and_then(Result::ok);
     let mock_llm = MockLlmProvider;
 
-    let live_llm = anthropic.is_some() || gemini.is_some() || copilot.is_some() || ollama.is_some();
+    let live_llm = anthropic.is_some()
+        || gemini.is_some()
+        || copilot.is_some()
+        || ollama.is_some()
+        || openai_compat.is_some();
     let mut providers: Vec<&dyn LlmProvider> = Vec::new();
     if let Some(a) = anthropic.as_ref() {
         providers.push(a);
@@ -1095,6 +1107,9 @@ async fn run_conversion(
     }
     if let Some(o) = ollama.as_ref() {
         providers.push(o);
+    }
+    if let Some(oc) = openai_compat.as_ref() {
+        providers.push(oc);
     }
     let policy = if live_llm {
         RoutingPolicy::from_env()
