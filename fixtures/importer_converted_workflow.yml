@@ -1,0 +1,39 @@
+name: Contoso-Payments/Contoso-Payments-CI
+on:
+  push:
+    branches:
+    - main
+    - releases/*
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        dotnetVersion:
+        - 8.0.x
+        - 6.0.x
+    steps:
+    - name: checkout
+      uses: actions/checkout@v4.1.0
+    - uses: actions/setup-dotnet@v4.0.0
+      with:
+        dotnet-version: "${{ matrix.dotnetVersion }}"
+#     # This item has no matching transformer
+#     - task: DownloadSecureFile@1
+#       name: signingCert
+#       inputs:
+#         secureFile: contoso-code-signing.pfx
+    - name: Build
+      run: dotnet restore && dotnet build -c Release
+#     # This item has no matching transformer
+#     - task: SonarQubePrepare@5
+#       inputs:
+#         SonarQube: sonarqube-prod
+#         scannerMode: MSBuild
+#         projectKey: contoso-payments
+    - name: Test
+      run: dotnet test --collect:"XPlat Code Coverage"
+    - uses: actions/upload-artifact@v4.1.0
+      with:
+        name: drop
+        path: "${{ runner.temp }}"

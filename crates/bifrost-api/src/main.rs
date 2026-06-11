@@ -116,7 +116,17 @@ async fn convert(
         return Ok(Json(record_json(&rec)));
     }
 
-    let outcome = run_conversion(&id)
+    // The pipeline's ADO project (for the live Docker importer), looked up in the
+    // portfolio; falls back to BIFROST_PROJECT inside run_conversion.
+    let project = state
+        .portfolio
+        .read()
+        .await
+        .pipelines
+        .iter()
+        .find(|p| p.id == id)
+        .map(|p| p.project.clone());
+    let outcome = run_conversion(&id, project.as_deref())
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let rec = StoredProposal {
@@ -440,6 +450,7 @@ async fn job_events(
 /// Unset, this is the zero-config mock path.
 async fn run_conversion(
     pipeline_id: &str,
+    project: Option<&str>,
 ) -> Result<ConversionOutcome, bifrost_adapters::ConversionError> {
     use bifrost_adapters::{DockerImporter, Importer};
     use bifrost_llm::{
@@ -498,9 +509,14 @@ async fn run_conversion(
     };
     let router = LlmRouter::new(providers, air_gap).with_policy(policy);
 
-    // Real Importer when live + a project + ADO org are configured; else the mock.
+    // Real Importer when live + a project (the pipeline's, else BIFROST_PROJECT)
+    // + ADO org are configured; else the mock.
     let docker = live
-        .then(|| std::env::var("BIFROST_PROJECT").ok())
+        .then(|| {
+            project
+                .map(str::to_string)
+                .or_else(|| std::env::var("BIFROST_PROJECT").ok())
+        })
         .flatten()
         .and_then(|p| DockerImporter::from_env(p).ok());
     let mock_importer = MockImporter;
@@ -642,7 +658,7 @@ mod tests {
 
     #[tokio::test]
     async fn conversion_helper_produces_a_draft_proposal_and_runbook() {
-        let outcome = run_conversion("SARC-main")
+        let outcome = run_conversion("SARC-main", None)
             .await
             .expect("offline conversion succeeds");
         assert_eq!(outcome.proposal.status, ProposalStatus::Draft);
