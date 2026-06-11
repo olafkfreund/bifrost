@@ -1,6 +1,6 @@
 <div align="center">
 
-# ❄️ Bifrost
+# Bifrost
 
 **The bridge between worlds — Azure DevOps → GitHub Actions, at portfolio scale.**
 
@@ -9,10 +9,10 @@ Bifrost is an orchestration + intelligence layer on top of GitHub's official mig
 conversion into a **portfolio-scale, semantically-reviewed, human-approved, fully-documented**
 migration — with a pluggable, **air-gap-capable** multi-model LLM layer.
 
-[**📖 Documentation & Showcase →**](https://olafkfreund.github.io/bifrost/)
+[**Documentation & Showcase**](https://bitfrost.freundcloud.com/)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-![Status: Planning](https://img.shields.io/badge/status-planning%20(M0)-yellow)
+![Status: Active development](https://img.shields.io/badge/status-M5%20validation-brightgreen)
 ![Built on](https://img.shields.io/badge/wraps-gh%20actions--importer%20%C2%B7%20GEI-2088FF)
 
 </div>
@@ -56,19 +56,24 @@ INGESTION ADAPTERS          EXTERNAL: ADO REST API · GitHub API · GEI
 ```
 
 Full design: [`bifrost-implementation-plan.md`](bifrost-implementation-plan.md) ·
-rendered on the [docs site](https://olafkfreund.github.io/bifrost/).
+rendered on the [docs site](https://bitfrost.freundcloud.com/).
 
 ## Roadmap
 
-| Milestone | Focus |
-|---|---|
-| **M0** Foundations | Workspace, CI, devcontainer, licence, docs, fixtures |
-| **M1** Audit MVP | ADO adapter + Importer audit wrapper + portfolio heatmap |
-| **M2** Conversion + LLM | dry-run wrapping, gap detection, LLM layer, risk model |
-| **M3** Review Portal | Three-pane diff, approve/edit, proposal lifecycle |
-| **M4** Commit + PR | Push/migrate, manual-task checklists, PR automation |
-| **M5** Validation | Sandbox trigger + parity report |
-| **M6** Compliance + Deploy | Attestation export, auth, multi-tenant, Helm |
+| Milestone | Focus | Status |
+|---|---|---|
+| **M0** Foundations | Workspace, CI, devcontainer, licence, docs, fixtures | In progress |
+| **M1** Audit MVP | ADO adapter + Importer audit wrapper + portfolio heatmap | Mostly done |
+| **M2** Conversion + LLM | dry-run wrapping, gap detection, LLM layer, risk model | Done |
+| **M3** Review Portal | Three-pane diff, approve/edit, proposal lifecycle | Done |
+| **M4** Commit + PR | Push/migrate, manual-task checklists, PR automation | Done |
+| **M5** Validation | Sandbox trigger + run capture + parity diff | In progress |
+| **M6** Compliance + Deploy | Attestation export, auth, multi-tenant, Helm | Planned |
+
+The end-to-end loop already works against live Azure DevOps projects: audit a portfolio,
+convert a pipeline (real Importer dry-run + grounded LLM gap-fill, air-gap capable), review
+and approve in the portal, open a PR, then trigger the converted workflow in a sandbox,
+capture its run, and diff it against the ADO baseline for smoke parity.
 
 ## Getting started (contributors)
 
@@ -78,7 +83,7 @@ client:
 
 ```bash
 nix develop                   # enter the Bifrost dev shell (honours rust-toolchain.toml)
-cargo test --workspace        # 27 tests green
+cargo test --workspace        # full suite green (100+ tests)
 cd portal && npm ci && npm run dev   # portal (mock data) at http://localhost:5173
 ```
 
