@@ -15,8 +15,8 @@
 //! network, no API key.
 
 use bifrost_core::{
-    assemble_workflow, assess, gap_is_manual, signals_from_dry_run, Classification, Gap, GapFill,
-    GapKind, Proposal, Runbook,
+    assemble_workflow, assess, gap_is_manual, signals_from_dry_run, ChecklistCategory,
+    ChecklistItem, Classification, Gap, GapFill, GapKind, Proposal, RiskAssessment, Runbook,
 };
 use bifrost_llm::{GapFillRequest, LlmError, Router, TaskClass, GAP_FILL_PROMPT_ID};
 
@@ -147,6 +147,15 @@ pub async fn convert_pipeline(
 ) -> Result<ConversionOutcome, ConversionError> {
     let dry = importer.dry_run(pipeline_id).await?;
 
+    // Deterministic risk — derived from the gaps + classification, not the model.
+    let assessment = assess(&signals_from_dry_run(&dry, classification));
+
+    // Classic/designer pipelines have no YAML source to convert (plan §10, the
+    // hard tail): surface a manual-rework scaffold instead of auto gap-fill.
+    if classification == Classification::Classic {
+        return Ok(classic_outcome(proposal_id, pipeline_id, &dry, &assessment));
+    }
+
     // Human work → the runbook.
     let runbook = Runbook::from_gaps(&dry.gaps);
 
@@ -192,9 +201,6 @@ pub async fn convert_pipeline(
 
     let proposed_yaml = assemble_workflow(&dry.converted_yaml, &fills);
 
-    // Deterministic risk — derived from the gaps, not the model.
-    let assessment = assess(&signals_from_dry_run(&dry, classification));
-
     let confidence = if confidences.is_empty() {
         1.0 // nothing needed filling
     } else {
@@ -215,6 +221,70 @@ pub async fn convert_pipeline(
     );
 
     Ok(ConversionOutcome { proposal, runbook })
+}
+
+const CLASSIC_BANNER: &str = "\
+# ──────────────────────────────────────────────────────────────────────
+# CLASSIC (designer) PIPELINE — MANUAL MIGRATION REQUIRED
+# This Azure DevOps pipeline is defined in the designer (no YAML source),
+# so it cannot be auto-converted. Recreate each task as a workflow step;
+# see the runbook for the manual checklist.
+# ──────────────────────────────────────────────────────────────────────";
+
+/// Build the manual-rework outcome for a classic/designer pipeline: no LLM
+/// gap-fill (there is no source to ground from), a clearly-flagged scaffold, and
+/// a runbook led by a "re-author in YAML" item. Risk stays the deterministic
+/// engine's verdict (classic defaults Amber/Red).
+fn classic_outcome(
+    proposal_id: &str,
+    pipeline_id: &str,
+    dry: &bifrost_core::DryRunResult,
+    assessment: &RiskAssessment,
+) -> ConversionOutcome {
+    let proposed_yaml = if dry.converted_yaml.trim().is_empty() {
+        CLASSIC_BANNER.to_string()
+    } else {
+        format!("{CLASSIC_BANNER}\n\n{}", dry.converted_yaml)
+    };
+
+    let mut runbook = Runbook::from_gaps(&dry.gaps);
+    runbook.items.insert(
+        0,
+        ChecklistItem {
+            category: ChecklistCategory::ReplacementAction,
+            title: "Re-author this classic pipeline in YAML".into(),
+            construct: "classic-pipeline".into(),
+            detail:
+                "Designer-defined pipeline has no YAML source — the Importer cannot convert it; \
+                     recreate each task as a GitHub Actions workflow step."
+                    .into(),
+        },
+    );
+
+    let proposal = Proposal::new(
+        proposal_id,
+        pipeline_id,
+        dry.source_yaml.clone(),
+        proposed_yaml,
+        "Classic/designer pipeline: no YAML source to convert — this is a manual-rework scaffold, \
+         not an auto-conversion."
+            .to_string(),
+        vec![
+            "Classic pipeline: every step must be re-authored by hand; designer pipelines are \
+              not auto-convertible."
+                .to_string(),
+        ],
+        vec![
+            "Recreate each designer task as a workflow step".to_string(),
+            "Run the workflow in a sandbox and compare to the classic pipeline".to_string(),
+        ],
+        // No gap-fill prompt ran — mark provenance accordingly.
+        "classic-manual",
+        0.0,
+        assessment,
+    );
+
+    ConversionOutcome { proposal, runbook }
 }
 
 /// Route a fillable gap by intent: partial constructs are mechanical reshaping
@@ -240,6 +310,38 @@ mod tests {
             hard: vec!["mock".into()],
             docs: vec!["mock".into()],
         }
+    }
+
+    #[tokio::test]
+    async fn classic_pipeline_becomes_a_manual_rework_proposal_without_gap_fill() {
+        let importer = MockImporter;
+        let mock = MockLlmProvider;
+        let router = Router::new(vec![&mock], /* air_gap */ false).with_policy(mock_policy());
+
+        let outcome = convert_pipeline(
+            &importer,
+            &router,
+            "classic-deploy",
+            "prop-classic",
+            Classification::Classic,
+            "",
+        )
+        .await
+        .expect("classic conversion succeeds");
+
+        let p = outcome.proposal;
+        assert_eq!(p.status, ProposalStatus::Draft);
+        // A manual-rework scaffold — no LLM gap-fill ran.
+        assert!(p.proposed_yaml.contains("MANUAL MIGRATION REQUIRED"));
+        assert!(!p.proposed_yaml.contains("bifrost-gap-fill"));
+        assert_eq!(p.prompt_id, "classic-manual");
+        assert_eq!(p.confidence, 0.0);
+        // The runbook is led by the "re-author in YAML" item.
+        assert_eq!(
+            outcome.runbook.items[0].category,
+            bifrost_core::ChecklistCategory::ReplacementAction
+        );
+        assert!(outcome.runbook.items[0].title.contains("Re-author"));
     }
 
     #[tokio::test]
