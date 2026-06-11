@@ -36,7 +36,7 @@ use bifrost_adapters::{
 };
 use bifrost_core::{
     compare_parity, Attestation, AuditLog, AuditPack, Classification, Identity,
-    MigrationAttestation, ParityReport, Portfolio, ProposalStatus, RunFacts,
+    MigrationAttestation, ParityReport, Portfolio, ProposalStatus, Role, RunFacts,
 };
 use bifrost_llm::{MockLlmProvider, Router as LlmRouter, RoutingPolicy};
 use serde::Deserialize;
@@ -86,14 +86,21 @@ async fn health() -> Json<Value> {
     Json(json!({ "status": "ok", "service": "bifrost-api" }))
 }
 
-async fn portfolio(State(state): State<Shared>) -> Json<Portfolio> {
+async fn portfolio(
+    State(state): State<Shared>,
+    Extension(caller): Extension<Identity>,
+) -> Json<Portfolio> {
     let mut portfolio = state.portfolio.read().await.clone();
     // Overlay live review state so the portal's review queue reflects actions
     // taken this session: a converted pipeline shows its current proposal status,
-    // and the latest audit event names who last acted and when.
+    // and the latest audit event names who last acted and when. Only the caller's
+    // own tenant's proposals are overlaid (#66).
     if let Ok(all) = state.store.list().await {
-        let by_id: HashMap<String, &StoredProposal> =
-            all.iter().map(|r| (r.proposal.id.clone(), r)).collect();
+        let by_id: HashMap<String, &StoredProposal> = all
+            .iter()
+            .filter(|r| r.tenant == caller.tenant)
+            .map(|r| (r.proposal.id.clone(), r))
+            .collect();
         for p in &mut portfolio.pipelines {
             if let Some(rec) = by_id.get(&proposal_id_for(&p.id)) {
                 p.status = rec.proposal.status;
@@ -121,6 +128,7 @@ async fn refresh(State(state): State<Shared>) -> Json<Portfolio> {
 /// re-opening the panel. Returns `{ proposal, runbook, audit }`.
 async fn convert(
     State(state): State<Shared>,
+    Extension(caller): Extension<Identity>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let proposal_id = proposal_id_for(&id);
@@ -146,6 +154,8 @@ async fn convert(
         proposal: outcome.proposal,
         runbook: outcome.runbook,
         audit: AuditLog::new(),
+        // Owned by the caller's tenant (#66).
+        tenant: caller.tenant,
     };
     state.store.put(&rec).await.map_err(internal)?;
     Ok(Json(record_json(&rec)))
@@ -718,11 +728,16 @@ async fn attestation(
 /// attestation (who/what/why/when + parity), bundled into one tamper-evident,
 /// signed artifact with a summary roll-up — the single file an auditor needs.
 /// Air-gap safe. Each attestation is individually signed; the pack is signed too.
-async fn audit_pack(State(state): State<Shared>) -> Result<Json<Value>, (StatusCode, String)> {
+async fn audit_pack(
+    State(state): State<Shared>,
+    Extension(caller): Extension<Identity>,
+) -> Result<Json<Value>, (StatusCode, String)> {
     let all = state.store.list().await.map_err(internal)?;
     let (key, key_id) = signing_key();
+    // Only the caller's own tenant's migrations go in the pack (#66).
     let signed: Vec<_> = all
         .iter()
+        .filter(|rec| rec.tenant == caller.tenant)
         .map(|rec| {
             MigrationAttestation::build(&rec.proposal, rec.audit.events())
                 .sign(&key, key_id.clone())
@@ -747,6 +762,7 @@ struct ConvertJobBody {
 /// progress streams from `/api/jobs/:id/events` and snapshots at `/api/jobs/:id`.
 async fn start_convert_job(
     State(state): State<Shared>,
+    Extension(caller): Extension<Identity>,
     body: Option<Json<ConvertJobBody>>,
 ) -> Json<Value> {
     let body = body.map(|Json(b)| b).unwrap_or_default();
@@ -776,7 +792,7 @@ async fn start_convert_job(
 
     let n = state.next_job.fetch_add(1, Ordering::Relaxed);
     let id = format!("job-{n}");
-    let job = jobs::spawn_convert_job(id.clone(), state.store.clone(), pairs);
+    let job = jobs::spawn_convert_job(id.clone(), state.store.clone(), pairs, caller.tenant);
     state.jobs.write().await.insert(id.clone(), job.clone());
     Json(json!({ "jobId": id, "total": job.total }))
 }
@@ -968,33 +984,77 @@ fn app(state: Shared) -> Router {
         .with_state(state)
 }
 
-/// Authenticate the request and attach the [`Identity`]. `/api/health` is always
-/// open. When auth is disabled every request is the local admin; when enabled a
-/// valid bearer token is required (401 otherwise). Role/tenant enforcement on top
-/// of this is #66.
+/// The minimum role a request needs, by method + path (#66 RBAC). Reads need
+/// `Viewer`; the org-wide compliance export needs `Admin`; everything else that
+/// mutates needs `Reviewer`.
+fn required_role(method: &axum::http::Method, path: &str) -> Role {
+    use axum::http::Method;
+    if path == "/api/audit-pack" {
+        return Role::Admin;
+    }
+    match *method {
+        Method::GET | Method::HEAD | Method::OPTIONS => Role::Viewer,
+        _ => Role::Reviewer,
+    }
+}
+
+/// Extract the proposal id from a `/api/proposals/<id>[/...]` path, for the
+/// middleware's tenant check. `None` for any other path.
+fn proposal_id_from_path(path: &str) -> Option<&str> {
+    path.strip_prefix("/api/proposals/")
+        .map(|rest| rest.split('/').next().unwrap_or(rest))
+        .filter(|id| !id.is_empty())
+}
+
+/// Authenticate the request, enforce RBAC + tenant isolation, and attach the
+/// [`Identity`]. `/api/health` is always open. With auth disabled every request
+/// is the local admin (single tenant). With auth enabled: a valid bearer is
+/// required (401), the identity's role must meet [`required_role`] (403), and a
+/// proposal addressed by id must belong to the caller's tenant (404 otherwise) —
+/// so one tenant can neither see nor touch another's migrations (#65/#66).
 async fn auth_middleware(State(state): State<Shared>, mut req: Request, next: Next) -> Response {
     if req.uri().path() == "/api/health" {
         return next.run(req).await;
     }
-    let identity = if state.auth_enabled {
-        let bearer = req
-            .headers()
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|h| h.to_str().ok())
-            .and_then(|h| h.strip_prefix("Bearer "));
-        match bearer {
-            Some(token) => match state.auth.authenticate(token).await {
-                Ok(id) => id,
-                Err(e) => {
-                    tracing::debug!("auth rejected: {e}");
-                    return (StatusCode::UNAUTHORIZED, "invalid token").into_response();
-                }
-            },
-            None => return (StatusCode::UNAUTHORIZED, "missing bearer token").into_response(),
-        }
-    } else {
-        Identity::local_admin()
+    if !state.auth_enabled {
+        req.extensions_mut().insert(Identity::local_admin());
+        return next.run(req).await;
+    }
+
+    // Authenticate.
+    let bearer = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "));
+    let identity = match bearer {
+        Some(token) => match state.auth.authenticate(token).await {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::debug!("auth rejected: {e}");
+                return (StatusCode::UNAUTHORIZED, "invalid token").into_response();
+            }
+        },
+        None => return (StatusCode::UNAUTHORIZED, "missing bearer token").into_response(),
     };
+
+    // Authorize: role.
+    let path = req.uri().path().to_string();
+    let need = required_role(req.method(), &path);
+    if !identity.has_role(need) {
+        return (StatusCode::FORBIDDEN, format!("requires {need:?}")).into_response();
+    }
+
+    // Authorize: tenant ownership of a proposal addressed by id.
+    if let Some(pid) = proposal_id_from_path(&path) {
+        if let Ok(Some(rec)) = state.store.get(pid).await {
+            if rec.tenant != identity.tenant {
+                // 404 (not 403) so existence doesn't leak across tenants.
+                return (StatusCode::NOT_FOUND, format!("no proposal '{pid}'")).into_response();
+            }
+        }
+    }
+
     req.extensions_mut().insert(identity);
     next.run(req).await
 }
@@ -1126,12 +1186,18 @@ mod tests {
         })
     }
 
+    /// The caller-identity extension handlers receive from the auth middleware;
+    /// in direct handler tests we pass the local admin (tenant `default`).
+    fn admin() -> Extension<Identity> {
+        Extension(Identity::local_admin())
+    }
+
     #[tokio::test]
     async fn convert_stores_then_transition_walks_the_lifecycle() {
         let state = test_state();
 
         // Convert → a stored Draft with an empty audit trail.
-        let body = convert(State(state.clone()), Path("SARC-main".into()))
+        let body = convert(State(state.clone()), admin(), Path("SARC-main".into()))
             .await
             .unwrap()
             .0;
@@ -1140,7 +1206,7 @@ mod tests {
         assert_eq!(body["audit"].as_array().unwrap().len(), 0);
 
         // Re-convert is idempotent — same proposal, not a fresh one.
-        let again = convert(State(state.clone()), Path("SARC-main".into()))
+        let again = convert(State(state.clone()), admin(), Path("SARC-main".into()))
             .await
             .unwrap()
             .0;
@@ -1161,7 +1227,7 @@ mod tests {
             .0;
             assert_eq!(r["proposal"]["status"], serde_json::to_value(to).unwrap());
         }
-        let after = convert(State(state.clone()), Path("SARC-main".into()))
+        let after = convert(State(state.clone()), admin(), Path("SARC-main".into()))
             .await
             .unwrap()
             .0;
@@ -1171,7 +1237,7 @@ mod tests {
     #[tokio::test]
     async fn commit_requires_approval_then_opens_a_pr_and_moves_to_committed() {
         let state = test_state();
-        let body = convert(State(state.clone()), Path("SARC-main".into()))
+        let body = convert(State(state.clone()), admin(), Path("SARC-main".into()))
             .await
             .unwrap()
             .0;
@@ -1221,7 +1287,7 @@ mod tests {
     #[tokio::test]
     async fn validate_requires_committed() {
         let state = test_state();
-        let body = convert(State(state.clone()), Path("SARC-main".into()))
+        let body = convert(State(state.clone()), admin(), Path("SARC-main".into()))
             .await
             .unwrap()
             .0;
@@ -1234,7 +1300,7 @@ mod tests {
     #[tokio::test]
     async fn run_result_requires_committed() {
         let state = test_state();
-        let body = convert(State(state.clone()), Path("SARC-main".into()))
+        let body = convert(State(state.clone()), admin(), Path("SARC-main".into()))
             .await
             .unwrap()
             .0;
@@ -1249,7 +1315,7 @@ mod tests {
     #[tokio::test]
     async fn run_result_after_commit_reports_mock_run() {
         let state = test_state();
-        let body = convert(State(state.clone()), Path("SARC-main".into()))
+        let body = convert(State(state.clone()), admin(), Path("SARC-main".into()))
             .await
             .unwrap()
             .0;
@@ -1294,7 +1360,7 @@ mod tests {
     #[tokio::test]
     async fn parity_requires_committed() {
         let state = test_state();
-        let body = convert(State(state.clone()), Path("SARC-main".into()))
+        let body = convert(State(state.clone()), admin(), Path("SARC-main".into()))
             .await
             .unwrap()
             .0;
@@ -1306,7 +1372,7 @@ mod tests {
     #[tokio::test]
     async fn parity_after_commit_reports_a_verdict() {
         let state = test_state();
-        let body = convert(State(state.clone()), Path("SARC-main".into()))
+        let body = convert(State(state.clone()), admin(), Path("SARC-main".into()))
             .await
             .unwrap()
             .0;
@@ -1353,7 +1419,7 @@ mod tests {
     #[tokio::test]
     async fn attest_requires_committed() {
         let state = test_state();
-        let body = convert(State(state.clone()), Path("SARC-main".into()))
+        let body = convert(State(state.clone()), admin(), Path("SARC-main".into()))
             .await
             .unwrap()
             .0;
@@ -1367,7 +1433,7 @@ mod tests {
     #[tokio::test]
     async fn attest_records_parity_on_proposal_and_in_audit_log() {
         let state = test_state();
-        let body = convert(State(state.clone()), Path("SARC-main".into()))
+        let body = convert(State(state.clone()), admin(), Path("SARC-main".into()))
             .await
             .unwrap()
             .0;
@@ -1438,7 +1504,7 @@ mod tests {
     #[tokio::test]
     async fn attestation_exports_a_signed_record_for_any_proposal() {
         let state = test_state();
-        let body = convert(State(state.clone()), Path("SARC-main".into()))
+        let body = convert(State(state.clone()), admin(), Path("SARC-main".into()))
             .await
             .unwrap()
             .0;
@@ -1451,6 +1517,154 @@ mod tests {
         let signed: bifrost_core::SignedMigrationAttestation = serde_json::from_value(doc).unwrap();
         assert!(signed.verify(b"bifrost-dev-key"));
         assert!(!signed.verify(b"wrong-key"));
+    }
+
+    #[test]
+    fn required_role_gates_by_method_and_path() {
+        use axum::http::Method;
+        assert_eq!(required_role(&Method::GET, "/api/portfolio"), Role::Viewer);
+        assert_eq!(
+            required_role(&Method::POST, "/api/proposals/p/commit"),
+            Role::Reviewer
+        );
+        assert_eq!(
+            required_role(&Method::PATCH, "/api/proposals/p"),
+            Role::Reviewer
+        );
+        // The org-wide compliance export is admin-only.
+        assert_eq!(required_role(&Method::GET, "/api/audit-pack"), Role::Admin);
+    }
+
+    #[test]
+    fn proposal_id_from_path_extracts_the_id() {
+        assert_eq!(
+            proposal_id_from_path("/api/proposals/prop-x"),
+            Some("prop-x")
+        );
+        assert_eq!(
+            proposal_id_from_path("/api/proposals/prop-x/commit"),
+            Some("prop-x")
+        );
+        assert_eq!(proposal_id_from_path("/api/portfolio"), None);
+        assert_eq!(proposal_id_from_path("/api/proposals/"), None);
+    }
+
+    /// A test authenticator that reads the bearer as `"<tenant>/<role>"`, so
+    /// router tests can present different principals.
+    #[derive(Debug)]
+    struct TenantRoleAuth;
+
+    #[async_trait::async_trait]
+    impl auth::Authenticator for TenantRoleAuth {
+        async fn authenticate(&self, bearer: &str) -> Result<Identity, auth::AuthError> {
+            let (tenant, role) = bearer
+                .split_once('/')
+                .ok_or_else(|| auth::AuthError::Token("want tenant/role".into()))?;
+            let roles = Role::from_claim(role).into_iter().collect();
+            Ok(Identity {
+                subject: format!("{tenant}:{role}"),
+                name: None,
+                email: Some(format!("{role}@{tenant}")),
+                tenant: tenant.to_string(),
+                roles,
+            })
+        }
+    }
+
+    fn enforced_state() -> Shared {
+        Arc::new(AppState {
+            portfolio: RwLock::new(sample::portfolio()),
+            store: Arc::new(store::InMemoryStore::default()),
+            jobs: RwLock::new(HashMap::new()),
+            next_job: AtomicU64::new(1),
+            auth: Arc::new(TenantRoleAuth),
+            auth_enabled: true,
+        })
+    }
+
+    async fn send(state: &Shared, method: &str, uri: &str, bearer: Option<&str>) -> StatusCode {
+        use tower::ServiceExt;
+        let mut req = Request::builder().method(method).uri(uri);
+        if let Some(b) = bearer {
+            req = req.header(axum::http::header::AUTHORIZATION, format!("Bearer {b}"));
+        }
+        let resp = app(state.clone())
+            .oneshot(req.body(axum::body::Body::empty()).unwrap())
+            .await
+            .unwrap();
+        resp.status()
+    }
+
+    #[tokio::test]
+    async fn enforced_auth_requires_token_role_and_tenant() {
+        let state = enforced_state();
+        // Seed a proposal owned by tenant "acme".
+        let rec = StoredProposal {
+            proposal: bifrost_core::Proposal::new(
+                "prop-x",
+                "x",
+                "",
+                "",
+                "",
+                vec![],
+                vec![],
+                "p",
+                1.0,
+                &bifrost_core::assess(&bifrost_core::RiskSignals::default()),
+            ),
+            runbook: bifrost_core::Runbook::default(),
+            audit: AuditLog::new(),
+            tenant: "acme".into(),
+        };
+        state.store.put(&rec).await.unwrap();
+
+        // Health is always open.
+        assert_eq!(
+            send(&state, "GET", "/api/health", None).await,
+            StatusCode::OK
+        );
+        // No token → 401.
+        assert_eq!(
+            send(&state, "GET", "/api/portfolio", None).await,
+            StatusCode::UNAUTHORIZED
+        );
+        // Viewer cannot POST a conversion (needs Reviewer) → 403.
+        assert_eq!(
+            send(
+                &state,
+                "POST",
+                "/api/pipelines/x/convert",
+                Some("acme/viewer")
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+        // Viewer can read the portfolio → 200.
+        assert_eq!(
+            send(&state, "GET", "/api/portfolio", Some("acme/viewer")).await,
+            StatusCode::OK
+        );
+        // The audit pack is admin-only: reviewer → 403, admin → 200.
+        assert_eq!(
+            send(&state, "GET", "/api/audit-pack", Some("acme/reviewer")).await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            send(&state, "GET", "/api/audit-pack", Some("acme/admin")).await,
+            StatusCode::OK
+        );
+        // Tenant isolation: another tenant can't touch acme's proposal → 404,
+        // even with sufficient role.
+        assert_eq!(
+            send(
+                &state,
+                "GET",
+                "/api/proposals/prop-x/run",
+                Some("globex/reviewer")
+            )
+            .await,
+            StatusCode::NOT_FOUND
+        );
     }
 
     #[tokio::test]
@@ -1470,11 +1684,11 @@ mod tests {
         let state = test_state();
         // Two converted pipelines → two migrations in the pack.
         for id in ["SARC-main", "SARC-deploy"] {
-            let _ = convert(State(state.clone()), Path(id.into()))
+            let _ = convert(State(state.clone()), admin(), Path(id.into()))
                 .await
                 .unwrap();
         }
-        let doc = audit_pack(State(state.clone())).await.unwrap().0;
+        let doc = audit_pack(State(state.clone()), admin()).await.unwrap().0;
         assert_eq!(doc["summary"]["total"], 2);
         assert_eq!(doc["attestations"].as_array().unwrap().len(), 2);
         assert_eq!(doc["signature"]["algorithm"], "hmac-sha256");
@@ -1487,7 +1701,7 @@ mod tests {
     #[tokio::test]
     async fn validate_is_gated_on_required_manual_tasks() {
         let state = test_state();
-        let body = convert(State(state.clone()), Path("SARC-main".into()))
+        let body = convert(State(state.clone()), admin(), Path("SARC-main".into()))
             .await
             .unwrap()
             .0;
@@ -1554,7 +1768,7 @@ mod tests {
     #[tokio::test]
     async fn illegal_transition_and_edit_after_approval_are_409_unknown_is_404() {
         let state = test_state();
-        let body = convert(State(state.clone()), Path("SARC-main".into()))
+        let body = convert(State(state.clone()), admin(), Path("SARC-main".into()))
             .await
             .unwrap()
             .0;
@@ -1626,7 +1840,7 @@ mod tests {
     #[tokio::test]
     async fn portfolio_overlays_live_review_state_from_the_store() {
         let state = test_state();
-        let body = convert(State(state.clone()), Path("web-portal-ci".into()))
+        let body = convert(State(state.clone()), admin(), Path("web-portal-ci".into()))
             .await
             .unwrap()
             .0;
@@ -1643,7 +1857,7 @@ mod tests {
         .unwrap();
 
         // The served portfolio reflects the live proposal status + last actor.
-        let pf = portfolio(State(state.clone())).await.0;
+        let pf = portfolio(State(state.clone()), admin()).await.0;
         let p = pf
             .pipelines
             .iter()

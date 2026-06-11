@@ -27,6 +27,8 @@ pub struct StoredProposal {
     pub proposal: Proposal,
     pub runbook: Runbook,
     pub audit: AuditLog,
+    /// Owning tenant (multi-tenancy, #66). `default` for single-tenant/air-gap.
+    pub tenant: String,
 }
 
 #[async_trait]
@@ -148,12 +150,18 @@ impl SqliteStore {
                 id          TEXT PRIMARY KEY,
                 pipeline_id TEXT NOT NULL,
                 status      TEXT NOT NULL,
+                tenant      TEXT NOT NULL DEFAULT 'default',
                 doc         TEXT NOT NULL,
                 runbook     TEXT NOT NULL
             )",
         )
         .execute(&self.pool)
         .await?;
+        // Upgrade DBs created before the tenant column (#66); ignore if it exists.
+        let _ =
+            sqlx::query("ALTER TABLE proposals ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'")
+                .execute(&self.pool)
+                .await;
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS audit_log (
                 seq         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -201,13 +209,14 @@ impl SqliteStore {
 #[async_trait]
 impl ProposalStore for SqliteStore {
     async fn get(&self, id: &str) -> anyhow::Result<Option<StoredProposal>> {
-        let row = sqlx::query("SELECT doc, runbook FROM proposals WHERE id = ?")
+        let row = sqlx::query("SELECT doc, runbook, tenant FROM proposals WHERE id = ?")
             .bind(id)
             .fetch_optional(&self.pool)
             .await?;
         let Some(row) = row else { return Ok(None) };
         let doc: String = row.get("doc");
         let runbook_json: String = row.get("runbook");
+        let tenant: String = row.get("tenant");
         let proposal: Proposal = serde_json::from_str(&doc)?;
         let runbook: Runbook = serde_json::from_str(&runbook_json)?;
         let audit = self.load_audit(id).await?;
@@ -215,6 +224,7 @@ impl ProposalStore for SqliteStore {
             proposal,
             runbook,
             audit,
+            tenant,
         }))
     }
 
@@ -222,13 +232,16 @@ impl ProposalStore for SqliteStore {
         let doc = serde_json::to_string(&rec.proposal)?;
         let runbook = serde_json::to_string(&rec.runbook)?;
         sqlx::query(
-            "INSERT INTO proposals (id, pipeline_id, status, doc, runbook) VALUES (?, ?, ?, ?, ?)
+            "INSERT INTO proposals (id, pipeline_id, status, tenant, doc, runbook)
+             VALUES (?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
-                status = excluded.status, doc = excluded.doc, runbook = excluded.runbook",
+                status = excluded.status, tenant = excluded.tenant,
+                doc = excluded.doc, runbook = excluded.runbook",
         )
         .bind(&rec.proposal.id)
         .bind(&rec.proposal.pipeline_id)
         .bind(status_to_str(rec.proposal.status))
+        .bind(&rec.tenant)
         .bind(&doc)
         .bind(&runbook)
         .execute(&self.pool)
@@ -297,12 +310,19 @@ impl PgStore {
                 id          TEXT PRIMARY KEY,
                 pipeline_id TEXT NOT NULL,
                 status      TEXT NOT NULL,
+                tenant      TEXT NOT NULL DEFAULT 'default',
                 doc         TEXT NOT NULL,
                 runbook     TEXT NOT NULL
             )",
         )
         .execute(&self.pool)
         .await?;
+        // Upgrade DBs created before the tenant column (#66); ignore if it exists.
+        let _ = sqlx::query(
+            "ALTER TABLE proposals ADD COLUMN IF NOT EXISTS tenant TEXT NOT NULL DEFAULT 'default'",
+        )
+        .execute(&self.pool)
+        .await;
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS audit_log (
                 seq         BIGSERIAL PRIMARY KEY,
@@ -350,13 +370,14 @@ impl PgStore {
 #[async_trait]
 impl ProposalStore for PgStore {
     async fn get(&self, id: &str) -> anyhow::Result<Option<StoredProposal>> {
-        let row = sqlx::query("SELECT doc, runbook FROM proposals WHERE id = $1")
+        let row = sqlx::query("SELECT doc, runbook, tenant FROM proposals WHERE id = $1")
             .bind(id)
             .fetch_optional(&self.pool)
             .await?;
         let Some(row) = row else { return Ok(None) };
         let doc: String = row.get("doc");
         let runbook_json: String = row.get("runbook");
+        let tenant: String = row.get("tenant");
         let proposal: Proposal = serde_json::from_str(&doc)?;
         let runbook: Runbook = serde_json::from_str(&runbook_json)?;
         let audit = self.load_audit(id).await?;
@@ -364,6 +385,7 @@ impl ProposalStore for PgStore {
             proposal,
             runbook,
             audit,
+            tenant,
         }))
     }
 
@@ -371,14 +393,16 @@ impl ProposalStore for PgStore {
         let doc = serde_json::to_string(&rec.proposal)?;
         let runbook = serde_json::to_string(&rec.runbook)?;
         sqlx::query(
-            "INSERT INTO proposals (id, pipeline_id, status, doc, runbook)
-             VALUES ($1, $2, $3, $4, $5)
+            "INSERT INTO proposals (id, pipeline_id, status, tenant, doc, runbook)
+             VALUES ($1, $2, $3, $4, $5, $6)
              ON CONFLICT (id) DO UPDATE SET
-                status = EXCLUDED.status, doc = EXCLUDED.doc, runbook = EXCLUDED.runbook",
+                status = EXCLUDED.status, tenant = EXCLUDED.tenant,
+                doc = EXCLUDED.doc, runbook = EXCLUDED.runbook",
         )
         .bind(&rec.proposal.id)
         .bind(&rec.proposal.pipeline_id)
         .bind(status_to_str(rec.proposal.status))
+        .bind(&rec.tenant)
         .bind(&doc)
         .bind(&runbook)
         .execute(&self.pool)
@@ -445,6 +469,7 @@ mod tests {
             proposal,
             runbook: Runbook::default(),
             audit: AuditLog::new(),
+            tenant: "default".to_string(),
         }
     }
 
@@ -478,6 +503,15 @@ mod tests {
         // Idempotent re-put does not duplicate the (already-stored) event.
         store.put(&rec).await.unwrap();
         assert_eq!(store.get("prop-rt").await.unwrap().unwrap().audit.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn sqlite_round_trips_the_tenant() {
+        let store = temp_store("tenant").await;
+        let mut rec = sample_proposal("prop-t");
+        rec.tenant = "acme".into();
+        store.put(&rec).await.unwrap();
+        assert_eq!(store.get("prop-t").await.unwrap().unwrap().tenant, "acme");
     }
 
     #[tokio::test]
