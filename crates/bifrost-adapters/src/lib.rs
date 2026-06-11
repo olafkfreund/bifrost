@@ -5,6 +5,7 @@
 //! official tools; we never reimplement their conversion logic.
 
 pub mod azure_devops;
+pub mod baseline;
 pub mod convert;
 pub mod docker_importer;
 pub mod importer;
@@ -14,6 +15,9 @@ pub mod source;
 pub mod validate;
 
 pub use azure_devops::AzureDevOpsAdapter;
+pub use baseline::{
+    AzureDevOpsBaseline, BaselineError, BaselineRequest, BaselineSource, MockBaselineSource,
+};
 pub use convert::{convert_pipeline, ConversionError, ConversionOutcome};
 pub use docker_importer::DockerImporter;
 pub use importer::{parse_audit_summary, parse_dry_run, Importer, ImporterError, MockImporter};

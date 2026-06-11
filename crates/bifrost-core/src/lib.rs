@@ -14,6 +14,7 @@ pub mod conversion;
 pub mod gap;
 pub mod ingestion;
 pub mod model;
+pub mod parity;
 pub mod proposal;
 pub mod risk;
 pub mod runbook;
@@ -30,6 +31,9 @@ pub use ingestion::{
 pub use model::{
     Classification, Pipeline, Portfolio, PortfolioSummary, PortfolioTotals, ProposalStatus,
     RiskBand, RiskFactor,
+};
+pub use parity::{
+    compare as compare_parity, ParityReport, ParityVerdict, RunFacts, SetDiff, SMOKE_PARITY_CAVEAT,
 };
 pub use proposal::{is_legal_transition, Proposal, ProposalError};
 pub use risk::{assess, band_for_score, RiskAssessment, RiskSignals};
