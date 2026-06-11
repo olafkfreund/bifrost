@@ -64,8 +64,14 @@ pub struct DockerImporter {
 
 impl DockerImporter {
     pub fn new(organization: impl Into<String>, project: impl Into<String>) -> Self {
+        // Pin the image via BIFROST_IMPORTER_IMAGE (set it to a digest —
+        // `repo@sha256:…` — in production for a reproducible, attestable run).
+        let image = std::env::var("BIFROST_IMPORTER_IMAGE")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| DEFAULT_IMAGE.to_string());
         Self {
-            image: DEFAULT_IMAGE.to_string(),
+            image,
             organization: organization.into(),
             project: project.into(),
         }
@@ -76,6 +82,39 @@ impl DockerImporter {
         let url = std::env::var("AZDO_ORG_URL")
             .map_err(|_| ImporterError::Subprocess("AZDO_ORG_URL not set".into()))?;
         Ok(Self::new(org_from_url(&url).to_string(), project))
+    }
+
+    /// The image reference this importer runs (tag or `repo@sha256:…`).
+    pub fn image(&self) -> &str {
+        &self.image
+    }
+
+    /// Resolve the **immutable digest** (`repo@sha256:…`) of the image actually in
+    /// use, for per-job provenance (#30). Reads `docker image inspect`; falls back
+    /// to the configured reference when the digest can't be read (e.g. a
+    /// locally-built image with no repo digest).
+    pub async fn image_digest(&self) -> Result<String, ImporterError> {
+        // If already pinned by digest, that *is* the answer.
+        if self.image.contains("@sha256:") {
+            return Ok(self.image.clone());
+        }
+        let out = Command::new("docker")
+            .args([
+                "image",
+                "inspect",
+                "--format",
+                "{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}",
+                &self.image,
+            ])
+            .output()
+            .await
+            .map_err(|e| Self::err(format!("docker inspect failed: {e}")))?;
+        let digest = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        Ok(if out.status.success() && !digest.is_empty() {
+            digest
+        } else {
+            self.image.clone()
+        })
     }
 
     fn err(msg: impl Into<String>) -> ImporterError {
@@ -314,6 +353,18 @@ mod tests {
         let cfg = r#"{"_links":{"self":{"href":"https://dev.azure.com/o/x/_apis/build/Definitions/11?revision=1"}}}"#;
         assert_eq!(definition_id(cfg), Some("11".to_string()));
         assert_eq!(definition_id("{}"), None);
+    }
+
+    /// A digest-pinned image is its own provenance — `image_digest()` returns it
+    /// without shelling out to docker (#30). This test owns BIFROST_IMPORTER_IMAGE.
+    #[tokio::test]
+    async fn digest_pinned_image_is_its_own_digest() {
+        let pin = "ghcr.io/actions-importer/cli@sha256:deadbeef";
+        std::env::set_var("BIFROST_IMPORTER_IMAGE", pin);
+        let imp = DockerImporter::new("contoso", "proj");
+        assert_eq!(imp.image(), pin);
+        assert_eq!(imp.image_digest().await.unwrap(), pin);
+        std::env::remove_var("BIFROST_IMPORTER_IMAGE");
     }
 
     /// Live: pull-and-run the image. Skipped by default (needs Docker + creds).

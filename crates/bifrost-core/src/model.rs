@@ -90,6 +90,10 @@ pub struct PortfolioSummary {
     pub org: String,
     /// Pinned tool provenance, recorded per audit run for attestation.
     pub importer_version: String,
+    /// Immutable Importer image digest (`repo@sha256:…`) used for this run, so the
+    /// conversion is reproducible even if the image tag later moves (#30).
+    #[serde(default)]
+    pub importer_image_digest: String,
     pub ado2gh_version: String,
     pub air_gap: bool,
     pub generated_at: String,
