@@ -35,6 +35,6 @@ pub use model::{
 pub use parity::{
     compare as compare_parity, ParityReport, ParityVerdict, RunFacts, SetDiff, SMOKE_PARITY_CAVEAT,
 };
-pub use proposal::{is_legal_transition, Proposal, ProposalError};
+pub use proposal::{is_legal_transition, Attestation, Proposal, ProposalError};
 pub use risk::{assess, band_for_score, RiskAssessment, RiskSignals};
 pub use runbook::{gap_is_manual, ChecklistCategory, ChecklistItem, Runbook};
