@@ -322,6 +322,63 @@ pub enum ImporterError {
     Parse(String),
 }
 
+/// Estimated GitHub Actions runner usage from `gh actions-importer forecast`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Forecast {
+    /// Estimated total runner-minutes/month across the org.
+    pub total_minutes: u32,
+    /// Per-pipeline estimates by pipeline name (best-effort from the report).
+    pub per_pipeline: Vec<(String, u32)>,
+}
+
+/// Parse a `forecast_report.md` into a [`Forecast`]. Tolerant by design: it keys
+/// on `## Total` / `### <pipeline>` headers and any line mentioning
+/// "runner minutes" with a number, so minor prose changes in the report don't
+/// break it. Falls back to summing per-pipeline when no explicit total is found.
+pub fn parse_forecast(md: &str) -> Forecast {
+    let mut total = 0u32;
+    let mut per_pipeline = Vec::new();
+    let mut current: Option<String> = None;
+    let mut in_total = false;
+
+    for line in md.lines() {
+        let t = line.trim();
+        if let Some(h) = t.strip_prefix("## ") {
+            in_total = h.trim().eq_ignore_ascii_case("total");
+            current = None;
+            continue;
+        }
+        if let Some(name) = t.strip_prefix("### ") {
+            current = Some(name.trim().to_string());
+            continue;
+        }
+        if let Some(n) = runner_minutes(t) {
+            match &current {
+                Some(name) => per_pipeline.push((name.clone(), n)),
+                None if in_total => total = n,
+                None => {}
+            }
+        }
+    }
+
+    if total == 0 {
+        total = per_pipeline.iter().map(|(_, m)| m).sum();
+    }
+    Forecast {
+        total_minutes: total,
+        per_pipeline,
+    }
+}
+
+/// The runner-minutes figure on a report line (commas stripped), if any.
+fn runner_minutes(line: &str) -> Option<u32> {
+    if !line.to_ascii_lowercase().contains("runner minutes") {
+        return None;
+    }
+    let digits: String = line.chars().filter(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok().filter(|n| *n > 0)
+}
+
 /// The official `gh actions-importer`, wrapped behind a trait so orchestration
 /// can be tested without Docker. The real driver shells out to the pinned image.
 #[async_trait]
@@ -330,6 +387,8 @@ pub trait Importer: Send + Sync {
     async fn version(&self) -> Result<String, ImporterError>;
     /// Audit the org and return the parsed footprint.
     async fn audit(&self) -> Result<AuditSummary, ImporterError>;
+    /// Forecast estimated GitHub Actions runner usage for the org.
+    async fn forecast(&self) -> Result<Forecast, ImporterError>;
     /// Dry-run a single pipeline and return its converted ratio + gaps.
     async fn dry_run(&self, pipeline_id: &str) -> Result<DryRunResult, ImporterError>;
 }
@@ -342,6 +401,7 @@ const FIXTURE_AUDIT: &str = include_str!("../../../fixtures/audit_summary.md");
 const FIXTURE_DRY_RUN: &str = include_str!("../../../fixtures/dry_run.log");
 const FIXTURE_DRY_RUN_YAML: &str = include_str!("../../../fixtures/dry_run_converted.yml");
 const FIXTURE_SOURCE_YAML: &str = include_str!("../../../fixtures/source_pipeline.yml");
+const FIXTURE_FORECAST: &str = include_str!("../../../fixtures/forecast_report.md");
 
 #[async_trait]
 impl Importer for MockImporter {
@@ -351,6 +411,10 @@ impl Importer for MockImporter {
 
     async fn audit(&self) -> Result<AuditSummary, ImporterError> {
         Ok(parse_audit_summary(FIXTURE_AUDIT))
+    }
+
+    async fn forecast(&self) -> Result<Forecast, ImporterError> {
+        Ok(parse_forecast(FIXTURE_FORECAST))
     }
 
     async fn dry_run(&self, pipeline_id: &str) -> Result<DryRunResult, ImporterError> {
@@ -370,6 +434,27 @@ mod tests {
     use super::*;
 
     const FIXTURE: &str = include_str!("../../../fixtures/audit_summary.md");
+    const FORECAST: &str = include_str!("../../../fixtures/forecast_report.md");
+
+    #[test]
+    fn parse_forecast_extracts_total_and_per_pipeline() {
+        let f = parse_forecast(FORECAST);
+        // Total from the "## Total" section (commas stripped).
+        assert_eq!(f.total_minutes, 23_500);
+        assert_eq!(f.per_pipeline.len(), 3);
+        assert!(f
+            .per_pipeline
+            .iter()
+            .any(|(n, m)| n == "payments-api-ci" && *m == 6_800));
+    }
+
+    #[test]
+    fn parse_forecast_falls_back_to_sum_without_an_explicit_total() {
+        let md = "## Pipeline details\n\n### a\n- Estimated runner minutes per month: 100\n\
+                  \n### b\n- Estimated runner minutes per month: 250\n";
+        let f = parse_forecast(md);
+        assert_eq!(f.total_minutes, 350);
+    }
 
     #[test]
     fn parses_pipeline_and_step_counts_from_bold_percent_format() {

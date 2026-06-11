@@ -28,7 +28,10 @@ pub use docker_importer::DockerImporter;
 pub use github_auth::{
     github_token_from_env, AuthError, GitHubAppAuth, GitHubAuth, StaticTokenAuth,
 };
-pub use importer::{parse_audit_summary, parse_dry_run, Importer, ImporterError, MockImporter};
+pub use importer::{
+    parse_audit_summary, parse_dry_run, parse_forecast, Forecast, Importer, ImporterError,
+    MockImporter,
+};
 pub use orchestrator::{audit_org, audit_portfolio, AuditConfig, OrchestrationError};
 pub use publisher::{
     CommitRequest, CommitResult, GitHubPublisher, MockPublisher, PublishError, Publisher,

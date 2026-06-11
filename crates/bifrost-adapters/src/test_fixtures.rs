@@ -17,6 +17,7 @@ pub mod fixtures {
     pub const SOURCE_PIPELINE_YAML: &str = include_str!("../../../fixtures/source_pipeline.yml");
     pub const CONVERTED_WORKFLOW_YAML: &str =
         include_str!("../../../fixtures/importer_converted_workflow.yml");
+    pub const FORECAST_REPORT: &str = include_str!("../../../fixtures/forecast_report.md");
 
     pub const ADO_PROJECTS_JSON: &str = include_str!("../../../fixtures/ado/projects.json");
     pub const ADO_DEFINITION_JSON: &str = include_str!("../../../fixtures/ado/definition.json");
@@ -36,7 +37,9 @@ mod tests {
     use super::ado_json;
     use super::fixtures::*;
     use crate::azure_devops::{parse_projects, parse_service_connections, parse_variable_groups};
-    use crate::importer::{parse_audit_summary, parse_converted_workflow, parse_dry_run};
+    use crate::importer::{
+        parse_audit_summary, parse_converted_workflow, parse_dry_run, parse_forecast,
+    };
 
     /// The harness loads every fixture and each feeds its parser without panic —
     /// the reproducibility guarantee the parser issues rely on (#17 AC).
@@ -56,6 +59,11 @@ mod tests {
         assert!(
             !parse_converted_workflow(CONVERTED_WORKFLOW_YAML).is_empty(),
             "converted-workflow fixture should surface gaps"
+        );
+        let forecast = parse_forecast(FORECAST_REPORT);
+        assert!(
+            forecast.total_minutes > 0 && !forecast.per_pipeline.is_empty(),
+            "forecast fixture should yield a total + per-pipeline estimates"
         );
         assert!(!SOURCE_PIPELINE_YAML.is_empty());
         assert!(!DRY_RUN_CONVERTED_YAML.is_empty());

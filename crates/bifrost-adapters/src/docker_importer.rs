@@ -19,7 +19,8 @@ use bifrost_core::{AuditSummary, DryRunResult};
 use tokio::process::Command;
 
 use crate::importer::{
-    converted_ratio, parse_audit_summary, parse_converted_workflow, Importer, ImporterError,
+    converted_ratio, parse_audit_summary, parse_converted_workflow, parse_forecast, Forecast,
+    Importer, ImporterError,
 };
 
 const DEFAULT_IMAGE: &str = "ghcr.io/actions-importer/cli:latest";
@@ -114,6 +115,17 @@ impl Importer for DockerImporter {
         result
     }
 
+    async fn forecast(&self) -> Result<Forecast, ImporterError> {
+        let out_dir = self.run_forecast().await?;
+        let report_path = out_dir.join("report").join("forecast_report.md");
+        let result = tokio::fs::read_to_string(&report_path)
+            .await
+            .map(|md| parse_forecast(&md))
+            .map_err(|e| Self::err(format!("could not read forecast_report.md: {e}")));
+        let _ = tokio::fs::remove_dir_all(&out_dir).await;
+        result
+    }
+
     async fn dry_run(&self, pipeline_id: &str) -> Result<DryRunResult, ImporterError> {
         // The Importer's per-pipeline output already contains everything a
         // dry-run needs: the converted workflow (its gaps marked inline), the ADO
@@ -129,10 +141,40 @@ impl Importer for DockerImporter {
 }
 
 impl DockerImporter {
-    /// Run `audit azure-devops` for the project into a fresh work dir and return
-    /// it. Guards against filling the disk: a per-file size cap, host-user output
-    /// (cleanable), and a redirectable work dir. Callers clean the dir when done.
+    /// Run `audit azure-devops` for the project into a fresh work dir.
     async fn run_audit(&self) -> Result<PathBuf, ImporterError> {
+        self.run_command(vec![
+            "audit".into(),
+            "azure-devops".into(),
+            "--output-dir".into(),
+            "report".into(),
+            "--azure-devops-organization".into(),
+            self.organization.clone(),
+            "--azure-devops-project".into(),
+            self.project.clone(),
+        ])
+        .await
+    }
+
+    /// Run `forecast azure-devops` for the project into a fresh work dir.
+    async fn run_forecast(&self) -> Result<PathBuf, ImporterError> {
+        self.run_command(vec![
+            "forecast".into(),
+            "azure-devops".into(),
+            "--output-dir".into(),
+            "report".into(),
+            "--azure-devops-organization".into(),
+            self.organization.clone(),
+            "--azure-devops-project".into(),
+            self.project.clone(),
+        ])
+        .await
+    }
+
+    /// Run an Importer subcommand into a fresh work dir and return it. Guards
+    /// against filling the disk: a per-file size cap, host-user output (cleanable),
+    /// and a redirectable work dir. Callers clean the dir when done.
+    async fn run_command(&self, sub_args: Vec<String>) -> Result<PathBuf, ImporterError> {
         let (gh, pat) = Self::creds()?;
         // Work dir — redirectable off a small tmpfs via BIFROST_IMPORTER_WORKDIR.
         let base = std::env::var("BIFROST_IMPORTER_WORKDIR")
@@ -167,9 +209,9 @@ impl DockerImporter {
         ]);
         cmd.arg("-v").arg(format!("{}:/data", out_dir.display()));
         cmd.args(["-w", "/data", &self.image]);
-        cmd.args(["audit", "azure-devops", "--output-dir", "report"]);
-        cmd.args(["--azure-devops-organization", &self.organization]);
-        cmd.args(["--azure-devops-project", &self.project]);
+        for a in &sub_args {
+            cmd.arg(a);
+        }
         cmd.env("GITHUB_ACCESS_TOKEN", gh)
             .env("GITHUB_INSTANCE_URL", "https://github.com")
             .env("AZURE_DEVOPS_ACCESS_TOKEN", pat)
@@ -184,7 +226,7 @@ impl DockerImporter {
         eprint!("{}", String::from_utf8_lossy(&out.stderr));
         if !out.status.success() {
             let _ = tokio::fs::remove_dir_all(&out_dir).await;
-            return Err(Self::err("importer audit failed (see docker output)"));
+            return Err(Self::err("importer command failed (see docker output)"));
         }
         Ok(out_dir)
     }
