@@ -102,7 +102,8 @@ fn status_to_str(s: ProposalStatus) -> String {
 }
 
 fn status_from_str(s: &str) -> anyhow::Result<ProposalStatus> {
-    Ok(serde_json::from_value(serde_json::Value::String(s.to_string()))?)
+    let value = serde_json::Value::String(s.to_string());
+    Ok(serde_json::from_value(value)?)
 }
 
 impl SqliteStore {
@@ -165,11 +166,13 @@ impl SqliteStore {
         .await?;
         let mut audit = AuditLog::new();
         for r in rows {
+            let from: String = r.get("from_status");
+            let to: String = r.get("to_status");
             audit.append(AuditEvent {
                 proposal_id: id.to_string(),
                 actor: r.get("actor"),
-                from: status_from_str(&r.get::<String, _>("from_status"))?,
-                to: status_from_str(&r.get::<String, _>("to_status"))?,
+                from: status_from_str(&from)?,
+                to: status_from_str(&to)?,
                 at: r.get("at"),
                 note: r.get::<Option<String>, _>("note"),
             });
@@ -186,8 +189,10 @@ impl ProposalStore for SqliteStore {
             .fetch_optional(&self.pool)
             .await?;
         let Some(row) = row else { return Ok(None) };
-        let proposal: Proposal = serde_json::from_str(&row.get::<String, _>("doc"))?;
-        let runbook: Runbook = serde_json::from_str(&row.get::<String, _>("runbook"))?;
+        let doc: String = row.get("doc");
+        let runbook_json: String = row.get("runbook");
+        let proposal: Proposal = serde_json::from_str(&doc)?;
+        let runbook: Runbook = serde_json::from_str(&runbook_json)?;
         let audit = self.load_audit(id).await?;
         Ok(Some(StoredProposal {
             proposal,
@@ -241,7 +246,8 @@ impl ProposalStore for SqliteStore {
             .await?;
         let mut out = Vec::with_capacity(ids.len());
         for r in ids {
-            if let Some(sp) = self.get(&r.get::<String, _>("id")).await? {
+            let id: String = r.get("id");
+            if let Some(sp) = self.get(&id).await? {
                 out.push(sp);
             }
         }
