@@ -14,9 +14,11 @@
 //! [`Router`].
 
 mod anthropic;
+mod gemini;
 mod ollama;
 
 pub use anthropic::AnthropicProvider;
+pub use gemini::GeminiProvider;
 pub use ollama::OllamaProvider;
 
 use async_trait::async_trait;
@@ -278,6 +280,17 @@ impl<'a> Router<'a> {
                 return Ok(p);
             }
         }
+        // No policy preference matched (e.g. a provider configured but absent from
+        // the list, like a newly-added backend). Fall back to the first usable
+        // provider rather than failing — air-gap still excludes frontiers.
+        if let Some(p) = self
+            .providers
+            .iter()
+            .copied()
+            .find(|p| !self.air_gap || p.is_local())
+        {
+            return Ok(p);
+        }
         if self.air_gap {
             Err(LlmError::AirGapBlocked(format!(
                 "no local provider available for {class:?}"
@@ -463,6 +476,22 @@ mod tests {
             router.route(TaskClass::Documentation).unwrap().name(),
             "anthropic"
         );
+    }
+
+    #[test]
+    fn routes_to_a_configured_provider_absent_from_the_policy() {
+        // "gemini" is in no default preference list, but it's the only provider
+        // configured — the fallback returns it rather than failing.
+        let gemini = Stub {
+            id: "gemini",
+            local: false,
+        };
+        let router = Router::new(vec![&gemini], /* air_gap */ false);
+        assert_eq!(
+            router.route(TaskClass::HardReasoning).unwrap().name(),
+            "gemini"
+        );
+        assert_eq!(router.route(TaskClass::Bulk).unwrap().name(), "gemini");
     }
 
     #[test]
