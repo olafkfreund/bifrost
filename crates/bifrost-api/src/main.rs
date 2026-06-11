@@ -8,14 +8,18 @@
 //!
 //! Any failure falls back to the next source, so the server always starts.
 
+mod jobs;
 mod sample;
 mod store;
 
 use std::collections::HashMap;
+use std::convert::Infallible;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::{
     routing::{get, patch, post},
     Json, Router,
@@ -26,15 +30,19 @@ use bifrost_llm::{MockLlmProvider, Router as LlmRouter, RoutingPolicy};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::{Stream, StreamExt};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 use store::{ProposalStore, StoredProposal};
 
-/// Shared server state: the portfolio plus the proposal store.
+/// Shared server state: the portfolio, the proposal store, and the job registry.
 struct AppState {
     portfolio: RwLock<Portfolio>,
     store: Arc<dyn ProposalStore>,
+    jobs: jobs::JobRegistry,
+    next_job: AtomicU64,
 }
 
 type Shared = Arc<AppState>;
@@ -180,6 +188,86 @@ async fn edit(
     Ok(Json(record_json(&rec)))
 }
 
+/// Body of `POST /api/jobs/convert`: which pipelines to convert. Omit
+/// `pipelineIds` to convert every not-yet-started pipeline in the portfolio.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ConvertJobBody {
+    #[serde(default)]
+    pipeline_ids: Option<Vec<String>>,
+}
+
+/// Kick off a conversion job (fan-out across pipelines). Returns `{ jobId, total }`;
+/// progress streams from `/api/jobs/:id/events` and snapshots at `/api/jobs/:id`.
+async fn start_convert_job(
+    State(state): State<Shared>,
+    body: Option<Json<ConvertJobBody>>,
+) -> Json<Value> {
+    let body = body.map(|Json(b)| b).unwrap_or_default();
+    let ids = match body.pipeline_ids {
+        Some(ids) => ids,
+        None => state
+            .portfolio
+            .read()
+            .await
+            .pipelines
+            .iter()
+            .filter(|p| p.status == ProposalStatus::NotStarted)
+            .map(|p| p.id.clone())
+            .collect(),
+    };
+
+    let n = state.next_job.fetch_add(1, Ordering::Relaxed);
+    let id = format!("job-{n}");
+    let job = jobs::spawn_convert_job(id.clone(), state.store.clone(), ids);
+    state.jobs.write().await.insert(id.clone(), job.clone());
+    Json(json!({ "jobId": id, "total": job.total }))
+}
+
+/// Current job progress snapshot. 404 if the job id is unknown.
+async fn job_status(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
+    let job = state
+        .jobs
+        .read()
+        .await
+        .get(&id)
+        .cloned()
+        .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(job.snapshot().await))
+}
+
+/// Live job progress as Server-Sent Events (#44). The first event is a snapshot
+/// (so late subscribers catch up), followed by live `item` / `done` events.
+async fn job_events(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, StatusCode> {
+    let job = state
+        .jobs
+        .read()
+        .await
+        .get(&id)
+        .cloned()
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let snapshot = Event::default()
+        .event("snapshot")
+        .json_data(job.snapshot().await)
+        .unwrap_or_default();
+    let live = BroadcastStream::new(job.subscribe()).map(|r| {
+        let event = match r {
+            Ok(ev) => Event::default().json_data(&ev).unwrap_or_default(),
+            Err(_) => Event::default().comment("lagged"),
+        };
+        Ok(event)
+    });
+    let stream = tokio_stream::once(Ok::<Event, Infallible>(snapshot)).chain(live);
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
 /// Run the conversion loop for `pipeline_id`, using live tooling where it is
 /// configured and falling back to the offline mocks otherwise.
 ///
@@ -275,6 +363,9 @@ fn app(state: Shared) -> Router {
         .route("/api/pipelines/:id/convert", post(convert))
         .route("/api/proposals/:id/transition", post(transition))
         .route("/api/proposals/:id", patch(edit))
+        .route("/api/jobs/convert", post(start_convert_job))
+        .route("/api/jobs/:id", get(job_status))
+        .route("/api/jobs/:id/events", get(job_events))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -356,6 +447,8 @@ async fn main() -> anyhow::Result<()> {
     let state: Shared = Arc::new(AppState {
         portfolio: RwLock::new(resolve_portfolio().await),
         store: store::from_env().await,
+        jobs: RwLock::new(HashMap::new()),
+        next_job: AtomicU64::new(1),
     });
 
     let addr = std::env::var("BIFROST_API_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
@@ -387,6 +480,8 @@ mod tests {
         Arc::new(AppState {
             portfolio: RwLock::new(sample::portfolio()),
             store: Arc::new(store::InMemoryStore::default()),
+            jobs: RwLock::new(HashMap::new()),
+            next_job: AtomicU64::new(1),
         })
     }
 
