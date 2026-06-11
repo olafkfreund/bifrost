@@ -18,7 +18,43 @@ use serde::{Deserialize, Serialize};
 
 use crate::audit_log::{AuditEvent, AuditLog};
 use crate::model::{ProposalStatus, RiskBand};
+use crate::parity::{ParityReport, ParityVerdict};
 use crate::risk::RiskAssessment;
+
+/// A recorded parity attestation on a proposal (#61): the deterministic
+/// smoke-parity verdict + the full report, with provenance (who attested it,
+/// when). Recorded on the proposal and appended to the audit log, so the parity
+/// result is part of the immutable evidence trail a reviewer sees before the
+/// final (`Committed → Validated`) approval. Cryptographic signing + export of
+/// the attestation is a separate concern (#62).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Attestation {
+    /// What the attestation is about — the pipeline being migrated.
+    pub subject: String,
+    /// The parity verdict (`Pass` | `Gaps`).
+    pub verdict: ParityVerdict,
+    /// The full smoke-parity report the verdict was computed from.
+    pub report: ParityReport,
+    /// The identity that recorded the attestation.
+    pub actor: String,
+    /// Caller-supplied ISO-8601 timestamp (the core does not read a clock).
+    pub at: String,
+}
+
+impl Attestation {
+    /// One-line summary used as the audit-log note.
+    pub fn summary(&self) -> String {
+        match self.verdict {
+            ParityVerdict::Pass => format!("parity attested PASS for {}", self.subject),
+            ParityVerdict::Gaps => format!(
+                "parity attested GAPS for {} ({} note(s))",
+                self.subject,
+                self.report.notes.len()
+            ),
+        }
+    }
+}
 
 /// An augmented workflow plus its rationale, risk, and lifecycle status.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -51,6 +87,10 @@ pub struct Proposal {
     /// URL of the PR opened when the workflow was committed (set on commit).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr_url: Option<String>,
+    /// The recorded smoke-parity attestation (#61), set once the committed
+    /// workflow's run has been diffed against the ADO baseline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parity: Option<Attestation>,
 }
 
 impl Proposal {
@@ -85,6 +125,7 @@ impl Proposal {
             confidence,
             status: ProposalStatus::Draft,
             pr_url: None,
+            parity: None,
         }
     }
 
@@ -146,6 +187,39 @@ impl Proposal {
         });
         Ok(())
     }
+
+    /// Record a smoke-parity attestation (#61) on the proposal and append it to
+    /// the log.
+    ///
+    /// Only valid once the workflow is `Committed` — parity diffs the *committed*
+    /// workflow's sandbox run against the ADO baseline, so attesting earlier would
+    /// be meaningless. Recorded as a same-state (`from == to`) audit event with a
+    /// note, so the verdict joins the immutable trail without faking a transition.
+    /// Re-attesting replaces the stored report; every attestation still leaves its
+    /// own audit event.
+    pub fn record_parity(
+        &mut self,
+        attestation: Attestation,
+        log: &mut AuditLog,
+    ) -> Result<(), ProposalError> {
+        let status = self.status;
+        if status != ProposalStatus::Committed {
+            return Err(ProposalError::NotAttestable { status });
+        }
+        let note = attestation.summary();
+        let actor = attestation.actor.clone();
+        let at = attestation.at.clone();
+        self.parity = Some(attestation);
+        log.append(AuditEvent {
+            proposal_id: self.id.clone(),
+            actor,
+            from: status,
+            to: status,
+            at,
+            note: Some(note),
+        });
+        Ok(())
+    }
 }
 
 /// Whether `from → to` is a legal edge in the proposal lifecycle.
@@ -176,6 +250,8 @@ pub enum ProposalError {
     },
     #[error("proposal is not editable in state {status:?}")]
     NotEditable { status: ProposalStatus },
+    #[error("proposal cannot be parity-attested in state {status:?} (must be committed)")]
+    NotAttestable { status: ProposalStatus },
 }
 
 #[cfg(test)]
@@ -310,6 +386,58 @@ mod tests {
         assert_eq!(last.from, ProposalStatus::InReview);
         assert_eq!(last.to, ProposalStatus::InReview);
         assert_eq!(last.note.as_deref(), Some("edited proposed_yaml"));
+    }
+
+    fn pass_attestation() -> Attestation {
+        use crate::parity::{compare, RunFacts};
+        let facts = RunFacts {
+            succeeded: true,
+            artifacts: vec!["app".into()],
+            outputs: vec![],
+        };
+        Attestation {
+            subject: "SARC-main".into(),
+            verdict: ParityVerdict::Pass,
+            report: compare(&facts, &facts),
+            actor: "reviewer@example.com".into(),
+            at: "2026-06-11T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn parity_attestation_records_on_committed_and_logs_a_same_state_event() {
+        let mut p = proposal();
+        let mut log = AuditLog::new();
+        for to in [
+            ProposalStatus::InReview,
+            ProposalStatus::Approved,
+            ProposalStatus::Committed,
+        ] {
+            p.transition(to, "r", "t", &mut log).unwrap();
+        }
+        p.record_parity(pass_attestation(), &mut log)
+            .expect("attestable once committed");
+        assert_eq!(p.parity.as_ref().unwrap().verdict, ParityVerdict::Pass);
+        let last = log.events().last().unwrap();
+        assert_eq!(last.from, ProposalStatus::Committed);
+        assert_eq!(last.to, ProposalStatus::Committed);
+        assert!(last.note.as_deref().unwrap().contains("PASS"));
+    }
+
+    #[test]
+    fn parity_attestation_before_commit_is_rejected() {
+        let mut p = proposal();
+        let mut log = AuditLog::new();
+        // Draft can't be parity-attested.
+        let err = p.record_parity(pass_attestation(), &mut log).unwrap_err();
+        assert!(matches!(
+            err,
+            ProposalError::NotAttestable {
+                status: ProposalStatus::Draft
+            }
+        ));
+        assert!(p.parity.is_none());
+        assert!(log.is_empty());
     }
 
     #[test]

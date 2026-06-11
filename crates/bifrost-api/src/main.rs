@@ -30,7 +30,10 @@ use bifrost_adapters::{
     MockBaselineSource, MockImporter, MockPublisher, MockRunCollector, MockSandboxTrigger,
     Publisher, RunCollector, RunQuery, SandboxTrigger, TriggerRequest,
 };
-use bifrost_core::{compare_parity, AuditLog, Classification, Portfolio, ProposalStatus, RunFacts};
+use bifrost_core::{
+    compare_parity, Attestation, AuditLog, Classification, ParityReport, Portfolio, ProposalStatus,
+    RunFacts,
+};
 use bifrost_llm::{MockLlmProvider, Router as LlmRouter, RoutingPolicy};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -513,22 +516,14 @@ fn select_baseline() -> Box<dyn BaselineSource> {
     Box::new(MockBaselineSource)
 }
 
-/// Smoke-parity report (#60): capture the converted run (#59) and diff it against
-/// the last successful ADO run on three signals — success, artifact names, and
-/// declared output names. Deliberately *not* full equivalence (the report carries
-/// that caveat). The proposal must be `Committed`. Both reads are opt-in behind
-/// `BIFROST_VALIDATE_LIVE`; mock otherwise.
-async fn parity(
-    State(state): State<Shared>,
-    Path(id): Path<String>,
-) -> Result<Json<Value>, (StatusCode, String)> {
-    let rec = state
-        .store
-        .get(&id)
-        .await
-        .map_err(internal)?
-        .ok_or((StatusCode::NOT_FOUND, format!("no proposal '{id}'")))?;
-
+/// Compute smoke parity for a committed proposal: capture the converted run
+/// (#59), fetch the ADO baseline (#60), and diff them. Shared by the read-only
+/// `parity` endpoint and the `attest` endpoint. Errors if the proposal isn't
+/// `Committed`. Both external reads are opt-in behind `BIFROST_VALIDATE_LIVE`.
+async fn compute_parity(
+    state: &AppState,
+    rec: &StoredProposal,
+) -> Result<(RunFacts, RunFacts, ParityReport), (StatusCode, String)> {
     if rec.proposal.status != ProposalStatus::Committed {
         return Err((
             StatusCode::CONFLICT,
@@ -577,13 +572,75 @@ async fn parity(
         .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
 
     let report = compare_parity(&baseline, &converted);
+    Ok((baseline, converted, report))
+}
 
+/// Smoke-parity report (#60): capture the converted run (#59) and diff it against
+/// the last successful ADO run on three signals — success, artifact names, and
+/// declared output names. Deliberately *not* full equivalence (the report carries
+/// that caveat). The proposal must be `Committed`. Read-only — to record the
+/// result as an attestation, POST to `/attest` (#61).
+async fn parity(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let rec = state
+        .store
+        .get(&id)
+        .await
+        .map_err(internal)?
+        .ok_or((StatusCode::NOT_FOUND, format!("no proposal '{id}'")))?;
+    let (baseline, converted, report) = compute_parity(&state, &rec).await?;
     Ok(Json(json!({
         "proposal": rec.proposal,
         "baseline": baseline,
         "converted": converted,
         "parity": report,
     })))
+}
+
+/// Body of `POST /api/proposals/:id/attest`: the acting identity (placeholder
+/// until auth — #65).
+#[derive(Deserialize, Default)]
+struct AttestBody {
+    #[serde(default)]
+    actor: Option<String>,
+}
+
+/// Record the smoke-parity result as an **attestation** on the proposal (#61):
+/// compute parity, write the verdict + full report onto the proposal, and append
+/// it to the immutable audit log — the evidence a reviewer sees before the final
+/// `Committed → Validated` approval. The proposal must be `Committed`. Signing +
+/// export of the attestation is #62.
+async fn attest(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+    body: Option<Json<AttestBody>>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let mut rec = state
+        .store
+        .get(&id)
+        .await
+        .map_err(internal)?
+        .ok_or((StatusCode::NOT_FOUND, format!("no proposal '{id}'")))?;
+
+    let (_baseline, _converted, report) = compute_parity(&state, &rec).await?;
+    let actor = body
+        .and_then(|Json(b)| b.actor)
+        .unwrap_or_else(|| "reviewer@portal".into());
+    let attestation = Attestation {
+        subject: rec.proposal.pipeline_id.clone(),
+        verdict: report.verdict,
+        report,
+        actor,
+        at: now_iso8601(),
+    };
+    rec.proposal
+        .record_parity(attestation, &mut rec.audit)
+        .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
+    state.store.put(&rec).await.map_err(internal)?;
+
+    Ok(Json(record_json(&rec)))
 }
 
 /// Body of `POST /api/jobs/convert`: which pipelines to convert. Omit
@@ -801,6 +858,7 @@ fn app(state: Shared) -> Router {
         .route("/api/proposals/:id/validate", post(validate))
         .route("/api/proposals/:id/run", get(run_result))
         .route("/api/proposals/:id/parity", get(parity))
+        .route("/api/proposals/:id/attest", post(attest))
         .route("/api/proposals/:id/runbook", patch(set_runbook_item))
         .route("/api/jobs/convert", post(start_convert_job))
         .route("/api/jobs/:id", get(job_status))
@@ -1146,6 +1204,78 @@ mod tests {
             .unwrap()
             .iter()
             .any(|n| n.as_str().unwrap().starts_with("Smoke parity only")));
+    }
+
+    #[tokio::test]
+    async fn attest_requires_committed() {
+        let state = test_state();
+        let body = convert(State(state.clone()), Path("SARC-main".into()))
+            .await
+            .unwrap()
+            .0;
+        let pid = body["proposal"]["id"].as_str().unwrap().to_string();
+        let err = attest(State(state.clone()), Path(pid), None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.0, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn attest_records_parity_on_proposal_and_in_audit_log() {
+        let state = test_state();
+        let body = convert(State(state.clone()), Path("SARC-main".into()))
+            .await
+            .unwrap()
+            .0;
+        let pid = body["proposal"]["id"].as_str().unwrap().to_string();
+
+        // Resolve required tasks, approve → commit.
+        let n = body["runbook"]["items"].as_array().unwrap().len();
+        for i in 0..n {
+            let _ = set_runbook_item(
+                State(state.clone()),
+                Path(pid.clone()),
+                Json(RunbookItemBody {
+                    index: i,
+                    done: true,
+                }),
+            )
+            .await
+            .unwrap();
+        }
+        for to in [ProposalStatus::InReview, ProposalStatus::Approved] {
+            let _ = transition(
+                State(state.clone()),
+                Path(pid.clone()),
+                Json(TransitionBody { to, actor: None }),
+            )
+            .await
+            .unwrap();
+        }
+        let _ = commit(State(state.clone()), Path(pid.clone()))
+            .await
+            .unwrap();
+
+        // Attest → the parity verdict + report are recorded on the proposal and
+        // an attestation event is appended to the immutable audit log.
+        let res = attest(State(state.clone()), Path(pid.clone()), None)
+            .await
+            .unwrap()
+            .0;
+        let verdict = res["proposal"]["parity"]["verdict"].as_str().unwrap();
+        assert!(verdict == "pass" || verdict == "gaps");
+        assert_eq!(res["proposal"]["parity"]["subject"], "SARC-main");
+        // The attestation note is in the audit trail.
+        assert!(res["audit"].as_array().unwrap().iter().any(|e| e["note"]
+            .as_str()
+            .is_some_and(|n| n.contains("parity attested"))));
+
+        // Re-attesting is allowed while committed (re-runs the diff).
+        let res2 = attest(State(state.clone()), Path(pid), None)
+            .await
+            .unwrap()
+            .0;
+        assert!(res2["proposal"]["parity"].is_object());
     }
 
     #[tokio::test]
