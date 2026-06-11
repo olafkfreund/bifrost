@@ -11,6 +11,7 @@ pub mod convert;
 pub mod docker_importer;
 pub mod github_auth;
 pub mod importer;
+pub mod jenkins;
 pub mod orchestrator;
 pub mod publisher;
 pub mod source;
@@ -34,6 +35,7 @@ pub use importer::{
     parse_audit_summary, parse_dry_run, parse_forecast, Forecast, Importer, ImporterError,
     MockImporter,
 };
+pub use jenkins::JenkinsAdapter;
 pub use orchestrator::{
     audit_org, audit_portfolio, merge_portfolios, AuditConfig, OrchestrationError,
 };

@@ -1,0 +1,26 @@
+{
+  "jobs": [
+    {
+      "name": "web-portal-ci",
+      "_class": "org.jenkinsci.plugins.workflow.job.WorkflowJob",
+      "url": "https://jenkins.example/job/web-portal-ci/"
+    },
+    {
+      "name": "legacy-build",
+      "_class": "hudson.model.FreeStyleProject",
+      "url": "https://jenkins.example/job/legacy-build/"
+    },
+    {
+      "name": "platform",
+      "_class": "com.cloudbees.hudson.plugins.folder.Folder",
+      "url": "https://jenkins.example/job/platform/",
+      "jobs": [
+        {
+          "name": "terraform-apply",
+          "_class": "org.jenkinsci.plugins.workflow.job.WorkflowJob",
+          "url": "https://jenkins.example/job/platform/job/terraform-apply/"
+        }
+      ]
+    }
+  ]
+}
