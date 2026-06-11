@@ -14,10 +14,12 @@
 //! [`Router`].
 
 mod anthropic;
+mod copilot;
 mod gemini;
 mod ollama;
 
 pub use anthropic::AnthropicProvider;
+pub use copilot::CopilotProvider;
 pub use gemini::GeminiProvider;
 pub use ollama::OllamaProvider;
 

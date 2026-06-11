@@ -287,7 +287,9 @@ async fn run_conversion(
     pipeline_id: &str,
 ) -> Result<ConversionOutcome, bifrost_adapters::ConversionError> {
     use bifrost_adapters::{DockerImporter, Importer};
-    use bifrost_llm::{AnthropicProvider, GeminiProvider, LlmProvider, OllamaProvider};
+    use bifrost_llm::{
+        AnthropicProvider, CopilotProvider, GeminiProvider, LlmProvider, OllamaProvider,
+    };
 
     let truthy = |v: String| matches!(v.as_str(), "1" | "true" | "yes");
     let live = std::env::var("BIFROST_CONVERT_LIVE")
@@ -306,17 +308,25 @@ async fn run_conversion(
     let gemini = (live && !air_gap && std::env::var("GEMINI_API_KEY").is_ok())
         .then(GeminiProvider::from_env)
         .and_then(Result::ok);
+    // GitHub Models — gated on a dedicated var so the importer's GITHUB_TOKEN
+    // doesn't silently pull it in.
+    let copilot = (live && !air_gap && std::env::var("GITHUB_MODELS_TOKEN").is_ok())
+        .then(CopilotProvider::from_env)
+        .and_then(Result::ok);
     let ollama = (live && (air_gap || std::env::var("OLLAMA_BASE_URL").is_ok()))
         .then(OllamaProvider::from_env);
     let mock_llm = MockLlmProvider;
 
-    let live_llm = anthropic.is_some() || gemini.is_some() || ollama.is_some();
+    let live_llm = anthropic.is_some() || gemini.is_some() || copilot.is_some() || ollama.is_some();
     let mut providers: Vec<&dyn LlmProvider> = Vec::new();
     if let Some(a) = anthropic.as_ref() {
         providers.push(a);
     }
     if let Some(g) = gemini.as_ref() {
         providers.push(g);
+    }
+    if let Some(c) = copilot.as_ref() {
+        providers.push(c);
     }
     if let Some(o) = ollama.as_ref() {
         providers.push(o);
