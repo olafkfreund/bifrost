@@ -25,11 +25,12 @@ use axum::{
     Json, Router,
 };
 use bifrost_adapters::{
-    convert_pipeline, declared_outputs, CommitRequest, ConversionOutcome, GitHubPublisher,
-    GitHubRunCollector, GitHubSandboxTrigger, MockImporter, MockPublisher, MockRunCollector,
-    MockSandboxTrigger, Publisher, RunCollector, RunQuery, SandboxTrigger, TriggerRequest,
+    convert_pipeline, declared_outputs, AzureDevOpsBaseline, BaselineRequest, BaselineSource,
+    CommitRequest, ConversionOutcome, GitHubPublisher, GitHubRunCollector, GitHubSandboxTrigger,
+    MockBaselineSource, MockImporter, MockPublisher, MockRunCollector, MockSandboxTrigger,
+    Publisher, RunCollector, RunQuery, SandboxTrigger, TriggerRequest,
 };
-use bifrost_core::{AuditLog, Classification, Portfolio, ProposalStatus};
+use bifrost_core::{compare_parity, AuditLog, Classification, Portfolio, ProposalStatus, RunFacts};
 use bifrost_llm::{MockLlmProvider, Router as LlmRouter, RoutingPolicy};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -493,6 +494,98 @@ async fn run_result(
     })))
 }
 
+/// The ADO baseline source: the real ADO REST read when the live validation path
+/// is enabled + configured, else the mock (never a silent external call).
+fn select_baseline() -> Box<dyn BaselineSource> {
+    let live = std::env::var("BIFROST_VALIDATE_LIVE")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+    if live {
+        match AzureDevOpsBaseline::from_env() {
+            Ok(b) => return Box::new(b),
+            Err(e) => {
+                tracing::warn!(
+                    "BIFROST_VALIDATE_LIVE set but baseline unavailable: {e}; using mock"
+                )
+            }
+        }
+    }
+    Box::new(MockBaselineSource)
+}
+
+/// Smoke-parity report (#60): capture the converted run (#59) and diff it against
+/// the last successful ADO run on three signals — success, artifact names, and
+/// declared output names. Deliberately *not* full equivalence (the report carries
+/// that caveat). The proposal must be `Committed`. Both reads are opt-in behind
+/// `BIFROST_VALIDATE_LIVE`; mock otherwise.
+async fn parity(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let rec = state
+        .store
+        .get(&id)
+        .await
+        .map_err(internal)?
+        .ok_or((StatusCode::NOT_FOUND, format!("no proposal '{id}'")))?;
+
+    if rec.proposal.status != ProposalStatus::Committed {
+        return Err((
+            StatusCode::CONFLICT,
+            format!(
+                "proposal must be committed to compare parity (is {:?})",
+                rec.proposal.status
+            ),
+        ));
+    }
+
+    // Converted side: the captured GitHub run + the outputs the workflow declares.
+    let slug = slugify(&rec.proposal.pipeline_id);
+    let query = RunQuery {
+        repo: std::env::var("BIFROST_GH_REPO").unwrap_or_else(|_| "example/sandbox".into()),
+        workflow_file: format!("{slug}.yml"),
+        git_ref: format!("bifrost/convert-{slug}"),
+    };
+    let run = select_collector()
+        .collect(&query)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+    let converted = RunFacts {
+        succeeded: run.conclusion.as_deref() == Some("success"),
+        artifacts: run.artifacts.iter().map(|a| a.name.clone()).collect(),
+        outputs: declared_outputs(&rec.proposal.proposed_yaml),
+    };
+
+    // Baseline side: the last successful ADO run for this pipeline. Resolve the
+    // pipeline's name + ADO project from the portfolio (the ADO definition is
+    // looked up by name).
+    let (name, project) = {
+        let portfolio = state.portfolio.read().await;
+        portfolio
+            .pipelines
+            .iter()
+            .find(|p| p.id == rec.proposal.pipeline_id)
+            .map(|p| (p.name.clone(), p.project.clone()))
+            .unwrap_or_else(|| (rec.proposal.pipeline_id.clone(), String::new()))
+    };
+    let baseline = select_baseline()
+        .baseline(&BaselineRequest {
+            project,
+            pipeline_name: name,
+        })
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+
+    let report = compare_parity(&baseline, &converted);
+
+    Ok(Json(json!({
+        "proposal": rec.proposal,
+        "baseline": baseline,
+        "converted": converted,
+        "parity": report,
+    })))
+}
+
 /// Body of `POST /api/jobs/convert`: which pipelines to convert. Omit
 /// `pipelineIds` to convert every not-yet-started pipeline in the portfolio.
 #[derive(Deserialize, Default)]
@@ -707,6 +800,7 @@ fn app(state: Shared) -> Router {
         .route("/api/proposals/:id/commit", post(commit))
         .route("/api/proposals/:id/validate", post(validate))
         .route("/api/proposals/:id/run", get(run_result))
+        .route("/api/proposals/:id/parity", get(parity))
         .route("/api/proposals/:id/runbook", patch(set_runbook_item))
         .route("/api/jobs/convert", post(start_convert_job))
         .route("/api/jobs/:id", get(job_status))
@@ -993,6 +1087,65 @@ mod tests {
         assert!(!res["run"]["jobs"].as_array().unwrap().is_empty());
         // Declared outputs come from the proposed workflow YAML (may be empty).
         assert!(res["declaredOutputs"].is_array());
+    }
+
+    #[tokio::test]
+    async fn parity_requires_committed() {
+        let state = test_state();
+        let body = convert(State(state.clone()), Path("SARC-main".into()))
+            .await
+            .unwrap()
+            .0;
+        let pid = body["proposal"]["id"].as_str().unwrap().to_string();
+        let err = parity(State(state.clone()), Path(pid)).await.unwrap_err();
+        assert_eq!(err.0, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn parity_after_commit_reports_a_verdict() {
+        let state = test_state();
+        let body = convert(State(state.clone()), Path("SARC-main".into()))
+            .await
+            .unwrap()
+            .0;
+        let pid = body["proposal"]["id"].as_str().unwrap().to_string();
+
+        // Resolve required tasks, approve → commit.
+        let n = body["runbook"]["items"].as_array().unwrap().len();
+        for i in 0..n {
+            let _ = set_runbook_item(
+                State(state.clone()),
+                Path(pid.clone()),
+                Json(RunbookItemBody {
+                    index: i,
+                    done: true,
+                }),
+            )
+            .await
+            .unwrap();
+        }
+        for to in [ProposalStatus::InReview, ProposalStatus::Approved] {
+            let _ = transition(
+                State(state.clone()),
+                Path(pid.clone()),
+                Json(TransitionBody { to, actor: None }),
+            )
+            .await
+            .unwrap();
+        }
+        let _ = commit(State(state.clone()), Path(pid.clone()))
+            .await
+            .unwrap();
+
+        // Parity diff → deterministic verdict ("pass" or "gaps") + the caveat.
+        let res = parity(State(state.clone()), Path(pid)).await.unwrap().0;
+        let verdict = res["parity"]["verdict"].as_str().unwrap();
+        assert!(verdict == "pass" || verdict == "gaps");
+        assert!(res["parity"]["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n.as_str().unwrap().starts_with("Smoke parity only")));
     }
 
     #[tokio::test]
