@@ -168,6 +168,10 @@ pub struct AuditPack {
     pub generated_at: String,
     pub summary: AuditPackSummary,
     pub attestations: Vec<SignedMigrationAttestation>,
+    /// Append-only configuration-change history for the tenant (#159) — who
+    /// changed which connection, when. No secret material.
+    #[serde(default)]
+    pub config_history: Vec<crate::ConfigEvent>,
 }
 
 impl AuditPack {
@@ -204,7 +208,17 @@ impl AuditPack {
                 parity_unattested,
             },
             attestations: signed,
+            config_history: Vec::new(),
         }
+    }
+
+    /// Attach the tenant's config-change history (#159), sorted for determinism.
+    pub fn with_config_history(mut self, mut history: Vec<crate::ConfigEvent>) -> Self {
+        history.sort_by(|a, b| {
+            (a.at.as_str(), a.connection_id.as_str()).cmp(&(&b.at, &b.connection_id))
+        });
+        self.config_history = history;
+        self
     }
 
     fn canonical_bytes(&self) -> Vec<u8> {

@@ -36,9 +36,9 @@ use bifrost_adapters::{
     TriggerRequest,
 };
 use bifrost_core::{
-    compare_parity, Attestation, AuditLog, AuditPack, Classification, Connection, ConnectionKind,
-    Identity, MigrationAttestation, ParityReport, Portfolio, ProposalStatus, Role, RunFacts,
-    SecretRef,
+    compare_parity, Attestation, AuditLog, AuditPack, Classification, ConfigAction, ConfigEvent,
+    Connection, ConnectionKind, Identity, MigrationAttestation, ParityReport, Portfolio,
+    ProposalStatus, Role, RunFacts, SecretRef,
 };
 use bifrost_llm::{MockLlmProvider, Router as LlmRouter, RoutingPolicy};
 use serde::Deserialize;
@@ -825,7 +825,16 @@ async fn audit_pack(
                 .sign(&key, key_id.clone())
         })
         .collect();
-    let pack = AuditPack::build(now_iso8601(), signed).sign(&key, key_id);
+    // Include the tenant's config-change history (#159) so the pack is the single
+    // complete compliance artifact.
+    let history = state
+        .store
+        .list_config_events(&caller.tenant)
+        .await
+        .unwrap_or_default();
+    let pack = AuditPack::build(now_iso8601(), signed)
+        .with_config_history(history)
+        .sign(&key, key_id);
     serde_json::to_value(&pack)
         .map(Json)
         .map_err(|e| internal(e.into()))
@@ -971,12 +980,20 @@ async fn create_connection(
         updated_at: now_iso8601(),
     };
     state.store.put_connection(&conn).await.map_err(internal)?;
-    tracing::info!(
-        "connection '{}' upserted in tenant '{}' by {}",
-        conn.id,
-        conn.tenant,
-        conn.updated_by
-    );
+    let event = ConfigEvent {
+        tenant: conn.tenant.clone(),
+        action: ConfigAction::Upserted,
+        connection_id: conn.id.clone(),
+        connection_name: conn.name.clone(),
+        kind: conn.kind_label().to_string(),
+        actor: conn.updated_by.clone(),
+        at: conn.updated_at.clone(),
+    };
+    state
+        .store
+        .append_config_event(&event)
+        .await
+        .map_err(internal)?;
     Ok(Json(serde_json::json!({ "connection": conn.redacted() })))
 }
 
@@ -1008,11 +1025,20 @@ async fn delete_connection(
     if !removed {
         return Err((StatusCode::NOT_FOUND, format!("no connection '{id}'")));
     }
-    tracing::info!(
-        "connection '{id}' deleted in tenant '{}' by {}",
-        caller.tenant,
-        caller.actor()
-    );
+    let event = ConfigEvent {
+        tenant: caller.tenant.clone(),
+        action: ConfigAction::Deleted,
+        connection_id: id.clone(),
+        connection_name: String::new(),
+        kind: String::new(),
+        actor: caller.actor(),
+        at: now_iso8601(),
+    };
+    state
+        .store
+        .append_config_event(&event)
+        .await
+        .map_err(internal)?;
     Ok(Json(serde_json::json!({ "deleted": id })))
 }
 
@@ -2006,6 +2032,15 @@ mod tests {
             "PLAINTEXT-PAT"
         );
 
+        // The create was recorded in the config-change audit (#159) and shows up
+        // in the compliance pack — no secret material.
+        let pack = audit_pack(State(state.clone()), admin()).await.unwrap().0;
+        let history = pack["configHistory"].as_array().unwrap();
+        assert!(history.iter().any(|e| e["action"] == "upserted"
+            && e["kind"] == "azure-devops"
+            && e["connectionName"] == "Prod ADO"));
+        assert!(!pack.to_string().contains("PLAINTEXT-PAT"));
+
         // Delete is tenant-scoped: another tenant can't remove it.
         assert!(!state.store.delete_connection("other", &id).await.unwrap());
         let del = delete_connection(State(state.clone()), admin(), Path(id.clone()))
@@ -2013,6 +2048,13 @@ mod tests {
             .unwrap()
             .0;
         assert_eq!(del["deleted"], id);
+        // The delete is now in the history too.
+        let pack2 = audit_pack(State(state.clone()), admin()).await.unwrap().0;
+        assert!(pack2["configHistory"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["action"] == "deleted"));
         std::env::remove_var("BIFROST_SECRET_KEY");
     }
 

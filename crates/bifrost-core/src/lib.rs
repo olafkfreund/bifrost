@@ -29,7 +29,7 @@ pub use attest::{
 };
 pub use audit::{AuditCounts, AuditSummary, ManualTask, ManualTaskKind, UnsupportedStep};
 pub use audit_log::{AuditEvent, AuditLog};
-pub use connection::{Connection, ConnectionKind, SecretRef};
+pub use connection::{ConfigAction, ConfigEvent, Connection, ConnectionKind, SecretRef};
 pub use conversion::{build_pipeline, pipeline_from_dry_run, signals_from_dry_run, PipelineMeta};
 pub use gap::{DryRunResult, Gap, GapKind};
 pub use identity::{Identity, Role};
