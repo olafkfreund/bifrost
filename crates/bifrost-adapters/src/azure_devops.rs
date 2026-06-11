@@ -1,9 +1,12 @@
 //! Live Azure DevOps source adapter.
 //!
-//! Implements [`SourceAdapter`] against the ADO REST API (PAT auth, rustls). The
+//! Implements [`SourceAdapter`] against the ADO REST API (PAT or Entra auth via
+//! [`crate::ado_auth`], rustls). The
 //! JSON→domain parsing is pure and fixture-tested; the network methods are
 //! integration-tested behind `#[ignore]` (they need a real PAT). Secret *values*
 //! are never requested or stored — only variable/connection names and flags.
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use bifrost_core::{
@@ -12,6 +15,7 @@ use bifrost_core::{
 };
 use serde_json::Value;
 
+use crate::ado_auth::{AdoAuth, EntraAuth, PatAuth};
 use crate::source::{AdapterError, SourceAdapter};
 
 const API_VERSION: &str = "7.1";
@@ -132,37 +136,56 @@ fn id_field(v: &Value, key: &str) -> Option<String> {
 
 // ---- live adapter ----------------------------------------------------------
 
-/// Read-only Azure DevOps adapter over the REST API.
+/// Read-only Azure DevOps adapter over the REST API. Authenticates with a PAT or
+/// a Microsoft Entra token (#20), behind the [`AdoAuth`] seam.
 pub struct AzureDevOpsAdapter {
     client: reqwest::Client,
     /// e.g. `https://dev.azure.com/<org>` (no trailing slash).
     org_url: String,
     project: String,
-    pat: String,
+    auth: Arc<dyn AdoAuth>,
 }
 
 impl AzureDevOpsAdapter {
+    /// Construct with a PAT (HTTP basic).
     pub fn new(
         org_url: impl Into<String>,
         project: impl Into<String>,
         pat: impl Into<String>,
+    ) -> Self {
+        Self::with_auth(org_url, project, Arc::new(PatAuth::new(pat)))
+    }
+
+    /// Construct with an explicit credential (PAT or Entra).
+    pub fn with_auth(
+        org_url: impl Into<String>,
+        project: impl Into<String>,
+        auth: Arc<dyn AdoAuth>,
     ) -> Self {
         let org_url = org_url.into().trim_end_matches('/').to_string();
         Self {
             client: reqwest::Client::new(),
             org_url,
             project: project.into(),
-            pat: pat.into(),
+            auth,
         }
     }
 
-    /// Build from `AZDO_ORG_URL` + `AZDO_PAT` env vars (set by `.envrc`).
+    /// Build from the environment. Auth is **Entra** when `AZURE_TENANT_ID` is set
+    /// (a service principal — least privilege), else a `AZDO_PAT`. `AZDO_ORG_URL`
+    /// is required either way.
     pub fn from_env(project: impl Into<String>) -> Result<Self, AdapterError> {
         let org = std::env::var("AZDO_ORG_URL")
             .map_err(|_| AdapterError::Auth("AZDO_ORG_URL not set".into()))?;
-        let pat =
-            std::env::var("AZDO_PAT").map_err(|_| AdapterError::Auth("AZDO_PAT not set".into()))?;
-        Ok(Self::new(org, project, pat))
+        let auth: Arc<dyn AdoAuth> = match EntraAuth::from_env()? {
+            Some(entra) => Arc::new(entra),
+            None => {
+                let pat = std::env::var("AZDO_PAT")
+                    .map_err(|_| AdapterError::Auth("AZDO_PAT or AZURE_* not set".into()))?;
+                Arc::new(PatAuth::new(pat))
+            }
+        };
+        Ok(Self::with_auth(org, project, auth))
     }
 
     /// GET a project-scoped ADO API path and return the JSON body.
@@ -186,10 +209,8 @@ impl AzureDevOpsAdapter {
     }
 
     async fn send(&self, url: &str) -> Result<Value, AdapterError> {
-        let resp = self
-            .client
-            .get(url)
-            .basic_auth("", Some(&self.pat))
+        let req = self.auth.apply(self.client.get(url)).await?;
+        let resp = req
             .send()
             .await
             .map_err(|e| AdapterError::Transport(e.to_string()))?;
