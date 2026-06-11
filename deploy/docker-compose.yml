@@ -27,6 +27,11 @@ services:
       BIFROST_AUTH: ${BIFROST_AUTH:-}
       BIFROST_ENTRA_TENANT_ID: ${BIFROST_ENTRA_TENANT_ID:-}
       BIFROST_ENTRA_AUDIENCE: ${BIFROST_ENTRA_AUDIENCE:-}
+      # ADO auth (#20): a service principal (Entra) is used when AZURE_* is set,
+      # else the AZDO_PAT. Pass these in via the environment / a .env file.
+      AZURE_TENANT_ID: ${AZURE_TENANT_ID:-}
+      AZURE_CLIENT_ID: ${AZURE_CLIENT_ID:-}
+      AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET:-}
       RUST_LOG: ${RUST_LOG:-bifrost_api=info,tower_http=info}
     volumes:
       - bifrost-data:/data

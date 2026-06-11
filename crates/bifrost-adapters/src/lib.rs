@@ -4,6 +4,7 @@
 //! wrapper around the official `gh actions-importer` Docker image. We wrap the
 //! official tools; we never reimplement their conversion logic.
 
+pub mod ado_auth;
 pub mod azure_devops;
 pub mod baseline;
 pub mod convert;
@@ -19,6 +20,7 @@ pub mod validate;
 #[cfg(test)]
 mod test_fixtures;
 
+pub use ado_auth::{AdoAuth, EntraAuth, PatAuth};
 pub use azure_devops::AzureDevOpsAdapter;
 pub use baseline::{
     AzureDevOpsBaseline, BaselineError, BaselineRequest, BaselineSource, MockBaselineSource,
