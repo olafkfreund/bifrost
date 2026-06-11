@@ -22,8 +22,8 @@ pub mod runbook;
 
 pub use assemble::{assemble_workflow, GapFill};
 pub use attest::{
-    MigrationAttestation, MigrationPredicate, Signature, SignedMigrationAttestation,
-    MIGRATION_PREDICATE_TYPE,
+    AuditPack, AuditPackSummary, MigrationAttestation, MigrationPredicate, Signature,
+    SignedAuditPack, SignedMigrationAttestation, MIGRATION_PREDICATE_TYPE,
 };
 pub use audit::{AuditCounts, AuditSummary, ManualTask, ManualTaskKind, UnsupportedStep};
 pub use audit_log::{AuditEvent, AuditLog};
