@@ -1,0 +1,12 @@
+apiVersion: v2
+name: bifrost
+description: Bifrost — Azure DevOps → GitHub Actions migration at portfolio scale (control plane + review portal).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://bitfrost.freundcloud.com
+sources:
+  - https://github.com/olafkfreund/bifrost
+maintainers:
+  - name: Olaf K. Freund
+    email: olaf@freundcloud.com

@@ -1,0 +1,61 @@
+# Bifrost self-host v1 (#67). Two services — the control-plane API and the portal
+# (nginx, proxying /api → api). SQLite by default (single-box, air-gap friendly);
+# flip to the bundled Postgres with `--profile postgres` + BIFROST_DB.
+#
+#   cd deploy && docker compose up --build         # SQLite, air-gap
+#   open http://localhost:8080
+#
+# Secrets/config come from the environment (or a deploy/.env file) — never baked
+# into the image.
+name: bifrost
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/docker/api.Dockerfile
+    environment:
+      BIFROST_API_ADDR: 0.0.0.0:8080
+      # SQLite file on the data volume; set to postgres://… for the server profile.
+      BIFROST_DB: ${BIFROST_DB:-sqlite:/data/bifrost.db}
+      # Air-gap by default: frontier LLM providers disabled, no data leaves the box.
+      BIFROST_AIR_GAP: ${BIFROST_AIR_GAP:-1}
+      # HMAC signing key for attestation export (#62/#63). Set in production.
+      BIFROST_SIGNING_KEY: ${BIFROST_SIGNING_KEY:-}
+      BIFROST_SIGNING_KEY_ID: ${BIFROST_SIGNING_KEY_ID:-}
+      RUST_LOG: ${RUST_LOG:-bifrost_api=info,tower_http=info}
+    volumes:
+      - bifrost-data:/data
+    expose:
+      - "8080"
+    restart: unless-stopped
+
+  portal:
+    build:
+      context: ..
+      dockerfile: deploy/docker/portal.Dockerfile
+    depends_on:
+      - api
+    ports:
+      - "${BIFROST_PORTAL_PORT:-8080}:80"
+    restart: unless-stopped
+
+  # Server mode: `docker compose --profile postgres up --build` and set
+  # BIFROST_DB=postgres://bifrost:bifrost@postgres:5432/bifrost
+  postgres:
+    image: postgres:17-alpine
+    profiles:
+      - postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-bifrost}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bifrost}
+      POSTGRES_DB: ${POSTGRES_DB:-bifrost}
+    volumes:
+      - bifrost-pg:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    restart: unless-stopped
+
+volumes:
+  bifrost-data:
+  bifrost-pg:
