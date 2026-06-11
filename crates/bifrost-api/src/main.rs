@@ -11,6 +11,7 @@
 mod auth;
 mod jobs;
 mod sample;
+mod secrets;
 mod store;
 
 use std::collections::HashMap;
@@ -35,8 +36,9 @@ use bifrost_adapters::{
     TriggerRequest,
 };
 use bifrost_core::{
-    compare_parity, Attestation, AuditLog, AuditPack, Classification, Identity,
-    MigrationAttestation, ParityReport, Portfolio, ProposalStatus, Role, RunFacts,
+    compare_parity, Attestation, AuditLog, AuditPack, Classification, Connection, ConnectionKind,
+    Identity, MigrationAttestation, ParityReport, Portfolio, ProposalStatus, Role, RunFacts,
+    SecretRef,
 };
 use bifrost_llm::{MockLlmProvider, Router as LlmRouter, RoutingPolicy};
 use serde::Deserialize;
@@ -59,6 +61,10 @@ struct AppState {
     auth: Arc<dyn auth::Authenticator>,
     /// Whether a valid token is required on `/api/*` (else open / local admin).
     auth_enabled: bool,
+    /// Resolves connection secret references at use-time (#154; consumed by the
+    /// per-connection audit path in #156).
+    #[allow(dead_code)]
+    secrets: Arc<dyn secrets::SecretResolver>,
 }
 
 type Shared = Arc<AppState>;
@@ -749,6 +755,191 @@ async fn audit_pack(
         .map_err(|e| internal(e.into()))
 }
 
+// ── Connections (#154) ────────────────────────────────────────────────────────
+
+/// How a secret is supplied when creating a connection. `inline` carries a
+/// plaintext that the server **encrypts immediately** (never stored raw); every
+/// other variant is a reference, so no secret value is transmitted or stored.
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+enum SecretInput {
+    EnvVar {
+        name: String,
+    },
+    KeyVault {
+        uri: String,
+    },
+    GitHubApp {
+        installation_id: String,
+    },
+    EntraWif {
+        tenant_id: String,
+        client_id: String,
+    },
+    Inline {
+        value: String,
+    },
+}
+
+impl SecretInput {
+    fn into_ref(self) -> Result<SecretRef, (StatusCode, String)> {
+        Ok(match self {
+            SecretInput::EnvVar { name } => SecretRef::EnvVar { name },
+            SecretInput::KeyVault { uri } => SecretRef::KeyVault { uri },
+            SecretInput::GitHubApp { installation_id } => SecretRef::GitHubApp { installation_id },
+            SecretInput::EntraWif {
+                tenant_id,
+                client_id,
+            } => SecretRef::EntraWif {
+                tenant_id,
+                client_id,
+            },
+            SecretInput::Inline { value } => secrets::encrypt_inline(&value)
+                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
+        })
+    }
+}
+
+/// The create-connection body — a tagged union (`kind`) carrying the connection's
+/// name + details. (A single tagged enum rather than name + flattened-enum, which
+/// serde can't deserialize reliably.)
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+enum ConnectionInput {
+    #[serde(rename = "azure-devops")]
+    AzureDevOps {
+        name: String,
+        org_url: String,
+        auth: SecretInput,
+    },
+    #[serde(rename = "github")]
+    GitHub {
+        name: String,
+        org: String,
+        auth: SecretInput,
+    },
+    Llm {
+        name: String,
+        provider: String,
+        #[serde(default)]
+        base_url: Option<String>,
+        model: String,
+        #[serde(default)]
+        key: Option<SecretInput>,
+        #[serde(default)]
+        is_local: bool,
+        #[serde(default)]
+        residency: Option<String>,
+    },
+}
+
+impl ConnectionInput {
+    fn into_named_kind(self) -> Result<(String, ConnectionKind), (StatusCode, String)> {
+        Ok(match self {
+            ConnectionInput::AzureDevOps {
+                name,
+                org_url,
+                auth,
+            } => (
+                name,
+                ConnectionKind::AzureDevOps {
+                    org_url,
+                    auth: auth.into_ref()?,
+                },
+            ),
+            ConnectionInput::GitHub { name, org, auth } => (
+                name,
+                ConnectionKind::GitHub {
+                    org,
+                    auth: auth.into_ref()?,
+                },
+            ),
+            ConnectionInput::Llm {
+                name,
+                provider,
+                base_url,
+                model,
+                key,
+                is_local,
+                residency,
+            } => (
+                name,
+                ConnectionKind::Llm {
+                    provider,
+                    base_url,
+                    model,
+                    key: key.map(SecretInput::into_ref).transpose()?,
+                    is_local,
+                    residency,
+                },
+            ),
+        })
+    }
+}
+
+/// Create or update a connection (#154). Admin-only (enforced by the middleware).
+/// Inline secrets are encrypted before storage; the response is **redacted** (no
+/// secret material). Owned by the caller's tenant.
+async fn create_connection(
+    State(state): State<Shared>,
+    Extension(caller): Extension<Identity>,
+    Json(input): Json<ConnectionInput>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let (name, kind) = input.into_named_kind()?;
+    let conn = Connection {
+        id: format!("conn-{}-{}", caller.tenant, slugify(&name)),
+        tenant: caller.tenant.clone(),
+        name,
+        kind,
+        updated_by: caller.actor(),
+        updated_at: now_iso8601(),
+    };
+    state.store.put_connection(&conn).await.map_err(internal)?;
+    tracing::info!(
+        "connection '{}' upserted in tenant '{}' by {}",
+        conn.id,
+        conn.tenant,
+        conn.updated_by
+    );
+    Ok(Json(serde_json::json!({ "connection": conn.redacted() })))
+}
+
+/// List the caller-tenant's connections (redacted). Admin-only.
+async fn list_connections(
+    State(state): State<Shared>,
+    Extension(caller): Extension<Identity>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let conns = state
+        .store
+        .list_connections(&caller.tenant)
+        .await
+        .map_err(internal)?;
+    let redacted: Vec<_> = conns.iter().map(Connection::redacted).collect();
+    Ok(Json(serde_json::json!({ "connections": redacted })))
+}
+
+/// Delete a connection by id within the caller's tenant. Admin-only. 404 if absent.
+async fn delete_connection(
+    State(state): State<Shared>,
+    Extension(caller): Extension<Identity>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let removed = state
+        .store
+        .delete_connection(&caller.tenant, &id)
+        .await
+        .map_err(internal)?;
+    if !removed {
+        return Err((StatusCode::NOT_FOUND, format!("no connection '{id}'")));
+    }
+    tracing::info!(
+        "connection '{id}' deleted in tenant '{}' by {}",
+        caller.tenant,
+        caller.actor()
+    );
+    Ok(Json(serde_json::json!({ "deleted": id })))
+}
+
 /// Body of `POST /api/jobs/convert`: which pipelines to convert. Omit
 /// `pipelineIds` to convert every not-yet-started pipeline in the portfolio.
 #[derive(Deserialize, Default)]
@@ -968,6 +1159,14 @@ fn app(state: Shared) -> Router {
         .route("/api/proposals/:id/attest", post(attest))
         .route("/api/proposals/:id/attestation", get(attestation))
         .route("/api/audit-pack", get(audit_pack))
+        .route(
+            "/api/connections",
+            get(list_connections).post(create_connection),
+        )
+        .route(
+            "/api/connections/:id",
+            axum::routing::delete(delete_connection),
+        )
         .route("/api/proposals/:id/runbook", patch(set_runbook_item))
         .route("/api/jobs/convert", post(start_convert_job))
         .route("/api/jobs/:id", get(job_status))
@@ -989,7 +1188,9 @@ fn app(state: Shared) -> Router {
 /// mutates needs `Reviewer`.
 fn required_role(method: &axum::http::Method, path: &str) -> Role {
     use axum::http::Method;
-    if path == "/api/audit-pack" {
+    // The org-wide compliance export and all connection/config management are
+    // admin-only (sensitive, even to read).
+    if path == "/api/audit-pack" || path.starts_with("/api/connections") {
         return Role::Admin;
     }
     match *method {
@@ -1150,6 +1351,7 @@ async fn main() -> anyhow::Result<()> {
         next_job: AtomicU64::new(1),
         auth: authn,
         auth_enabled,
+        secrets: Arc::new(secrets::DefaultSecretResolver),
     });
 
     let addr = std::env::var("BIFROST_API_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
@@ -1185,6 +1387,7 @@ mod tests {
             next_job: AtomicU64::new(1),
             auth: Arc::new(auth::MockAuthenticator::default()),
             auth_enabled: false,
+            secrets: Arc::new(secrets::DefaultSecretResolver),
         })
     }
 
@@ -1581,6 +1784,7 @@ mod tests {
             next_job: AtomicU64::new(1),
             auth: Arc::new(TenantRoleAuth),
             auth_enabled: true,
+            secrets: Arc::new(secrets::DefaultSecretResolver),
         })
     }
 
@@ -1666,6 +1870,75 @@ mod tests {
             )
             .await,
             StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn connection_crud_encrypts_inline_redacts_and_scopes_by_tenant() {
+        std::env::set_var("BIFROST_SECRET_KEY", "conn-test-key");
+        let state = test_state();
+        // Create an ADO connection with an inline (plaintext) PAT.
+        let body: ConnectionInput = serde_json::from_value(serde_json::json!({
+            "name": "Prod ADO",
+            "kind": "azure-devops",
+            "org_url": "https://dev.azure.com/acme",
+            "auth": { "type": "inline", "value": "PLAINTEXT-PAT" }
+        }))
+        .unwrap();
+        let res = create_connection(State(state.clone()), admin(), Json(body))
+            .await
+            .unwrap()
+            .0;
+        // Response is redacted: no plaintext, no ciphertext.
+        let s = serde_json::to_string(&res).unwrap();
+        assert!(!s.contains("PLAINTEXT-PAT"));
+        assert!(s.contains("dev.azure.com/acme"));
+
+        // List shows it (still redacted).
+        let listed = list_connections(State(state.clone()), admin())
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(listed["connections"].as_array().unwrap().len(), 1);
+        let id = listed["connections"][0]["id"].as_str().unwrap().to_string();
+
+        // The stored ciphertext decrypts back to the original (use-time).
+        let stored = state.store.list_connections("default").await.unwrap();
+        let bifrost_core::ConnectionKind::AzureDevOps { auth, .. } = &stored[0].kind else {
+            panic!("expected ADO connection");
+        };
+        let bifrost_core::SecretRef::EncryptedInline { ciphertext, nonce } = auth else {
+            panic!("expected encrypted inline");
+        };
+        assert_eq!(
+            secrets::decrypt_with("conn-test-key", ciphertext, nonce).unwrap(),
+            "PLAINTEXT-PAT"
+        );
+
+        // Delete is tenant-scoped: another tenant can't remove it.
+        assert!(!state.store.delete_connection("other", &id).await.unwrap());
+        let del = delete_connection(State(state.clone()), admin(), Path(id.clone()))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(del["deleted"], id);
+        std::env::remove_var("BIFROST_SECRET_KEY");
+    }
+
+    #[tokio::test]
+    async fn connections_are_admin_only() {
+        // RBAC: connection management requires Admin.
+        assert_eq!(
+            required_role(&axum::http::Method::GET, "/api/connections"),
+            Role::Admin
+        );
+        assert_eq!(
+            required_role(&axum::http::Method::POST, "/api/connections"),
+            Role::Admin
+        );
+        assert_eq!(
+            required_role(&axum::http::Method::DELETE, "/api/connections/c1"),
+            Role::Admin
         );
     }
 

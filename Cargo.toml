@@ -39,6 +39,7 @@ base64 = "0.22"
 sha2 = "0.10"
 hmac = "0.12"
 jsonwebtoken = "9"
+aes-gcm = "0.10"
 
 # Deny warnings workspace-wide so CI (clippy -D warnings) stays green by default.
 [workspace.lints.clippy]

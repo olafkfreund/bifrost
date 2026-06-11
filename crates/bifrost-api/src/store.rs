@@ -15,7 +15,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bifrost_core::{AuditEvent, AuditLog, Proposal, ProposalStatus, Runbook};
+use bifrost_core::{AuditEvent, AuditLog, Connection, Proposal, ProposalStatus, Runbook};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{PgPool, Row, SqlitePool};
@@ -39,6 +39,14 @@ pub trait ProposalStore: Send + Sync {
     async fn put(&self, rec: &StoredProposal) -> anyhow::Result<()>;
     /// Every stored proposal (for the portfolio review-state overlay).
     async fn list(&self) -> anyhow::Result<Vec<StoredProposal>>;
+
+    /// Upsert a tenant's connection (#154). The connection carries only secret
+    /// *references* / encrypted material — never plaintext.
+    async fn put_connection(&self, conn: &Connection) -> anyhow::Result<()>;
+    /// A tenant's connections.
+    async fn list_connections(&self, tenant: &str) -> anyhow::Result<Vec<Connection>>;
+    /// Delete a tenant's connection by id; `true` if one was removed.
+    async fn delete_connection(&self, tenant: &str, id: &str) -> anyhow::Result<bool>;
 }
 
 /// Resolve the store from the environment via `BIFROST_DB`:
@@ -85,6 +93,7 @@ pub async fn from_env() -> Arc<dyn ProposalStore> {
 #[derive(Default)]
 pub struct InMemoryStore {
     inner: RwLock<HashMap<String, StoredProposal>>,
+    connections: RwLock<HashMap<String, Connection>>,
 }
 
 #[async_trait]
@@ -101,6 +110,33 @@ impl ProposalStore for InMemoryStore {
     }
     async fn list(&self) -> anyhow::Result<Vec<StoredProposal>> {
         Ok(self.inner.read().await.values().cloned().collect())
+    }
+    async fn put_connection(&self, conn: &Connection) -> anyhow::Result<()> {
+        self.connections
+            .write()
+            .await
+            .insert(conn.id.clone(), conn.clone());
+        Ok(())
+    }
+    async fn list_connections(&self, tenant: &str) -> anyhow::Result<Vec<Connection>> {
+        Ok(self
+            .connections
+            .read()
+            .await
+            .values()
+            .filter(|c| c.tenant == tenant)
+            .cloned()
+            .collect())
+    }
+    async fn delete_connection(&self, tenant: &str, id: &str) -> anyhow::Result<bool> {
+        let mut g = self.connections.write().await;
+        match g.get(id) {
+            Some(c) if c.tenant == tenant => {
+                g.remove(id);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
     }
 }
 
@@ -178,6 +214,15 @@ impl SqliteStore {
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_audit_proposal ON audit_log(proposal_id, seq)")
             .execute(&self.pool)
             .await?;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS connections (
+                id     TEXT PRIMARY KEY,
+                tenant TEXT NOT NULL,
+                doc    TEXT NOT NULL
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -283,6 +328,39 @@ impl ProposalStore for SqliteStore {
         }
         Ok(out)
     }
+
+    async fn put_connection(&self, conn: &Connection) -> anyhow::Result<()> {
+        let doc = serde_json::to_string(conn)?;
+        sqlx::query(
+            "INSERT INTO connections (id, tenant, doc) VALUES (?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET tenant = excluded.tenant, doc = excluded.doc",
+        )
+        .bind(&conn.id)
+        .bind(&conn.tenant)
+        .bind(&doc)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn list_connections(&self, tenant: &str) -> anyhow::Result<Vec<Connection>> {
+        let rows = sqlx::query("SELECT doc FROM connections WHERE tenant = ?")
+            .bind(tenant)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter()
+            .map(|r| Ok(serde_json::from_str(&r.get::<String, _>("doc"))?))
+            .collect()
+    }
+
+    async fn delete_connection(&self, tenant: &str, id: &str) -> anyhow::Result<bool> {
+        let res = sqlx::query("DELETE FROM connections WHERE tenant = ? AND id = ?")
+            .bind(tenant)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
 }
 
 // ── Postgres ──────────────────────────────────────────────────────────────────
@@ -339,6 +417,15 @@ impl PgStore {
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_audit_proposal ON audit_log(proposal_id, seq)")
             .execute(&self.pool)
             .await?;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS connections (
+                id     TEXT PRIMARY KEY,
+                tenant TEXT NOT NULL,
+                doc    TEXT NOT NULL
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -443,6 +530,39 @@ impl ProposalStore for PgStore {
             }
         }
         Ok(out)
+    }
+
+    async fn put_connection(&self, conn: &Connection) -> anyhow::Result<()> {
+        let doc = serde_json::to_string(conn)?;
+        sqlx::query(
+            "INSERT INTO connections (id, tenant, doc) VALUES ($1, $2, $3)
+             ON CONFLICT (id) DO UPDATE SET tenant = EXCLUDED.tenant, doc = EXCLUDED.doc",
+        )
+        .bind(&conn.id)
+        .bind(&conn.tenant)
+        .bind(&doc)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn list_connections(&self, tenant: &str) -> anyhow::Result<Vec<Connection>> {
+        let rows = sqlx::query("SELECT doc FROM connections WHERE tenant = $1")
+            .bind(tenant)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter()
+            .map(|r| Ok(serde_json::from_str(&r.get::<String, _>("doc"))?))
+            .collect()
+    }
+
+    async fn delete_connection(&self, tenant: &str, id: &str) -> anyhow::Result<bool> {
+        let res = sqlx::query("DELETE FROM connections WHERE tenant = $1 AND id = $2")
+            .bind(tenant)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
     }
 }
 
