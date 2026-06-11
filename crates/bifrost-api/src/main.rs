@@ -276,8 +276,9 @@ async fn job_events(
 /// Docker run, and keeps tests deterministic. With it set:
 /// - **Importer**: the Docker `gh actions-importer` when `BIFROST_PROJECT` +
 ///   `AZDO_ORG_URL` are set; otherwise `MockImporter`.
-/// - **LLM**: Anthropic when `ANTHROPIC_API_KEY` is set (and not air-gap), Ollama
-///   when `OLLAMA_BASE_URL` is set or air-gap is on; otherwise `MockLlmProvider`.
+/// - **LLM**: Anthropic (`ANTHROPIC_API_KEY`) and Gemini (`GEMINI_API_KEY`) when
+///   not air-gap, Ollama when `OLLAMA_BASE_URL` is set or air-gap is on;
+///   otherwise `MockLlmProvider`.
 /// - `BIFROST_AIR_GAP` forces local-only routing (the [`Router`] never returns a
 ///   frontier), so no pipeline data leaves the box.
 ///
@@ -286,7 +287,7 @@ async fn run_conversion(
     pipeline_id: &str,
 ) -> Result<ConversionOutcome, bifrost_adapters::ConversionError> {
     use bifrost_adapters::{DockerImporter, Importer};
-    use bifrost_llm::{AnthropicProvider, LlmProvider, OllamaProvider};
+    use bifrost_llm::{AnthropicProvider, GeminiProvider, LlmProvider, OllamaProvider};
 
     let truthy = |v: String| matches!(v.as_str(), "1" | "true" | "yes");
     let live = std::env::var("BIFROST_CONVERT_LIVE")
@@ -302,14 +303,20 @@ async fn run_conversion(
     let anthropic = (live && !air_gap && std::env::var("ANTHROPIC_API_KEY").is_ok())
         .then(AnthropicProvider::from_env)
         .and_then(Result::ok);
+    let gemini = (live && !air_gap && std::env::var("GEMINI_API_KEY").is_ok())
+        .then(GeminiProvider::from_env)
+        .and_then(Result::ok);
     let ollama = (live && (air_gap || std::env::var("OLLAMA_BASE_URL").is_ok()))
         .then(OllamaProvider::from_env);
     let mock_llm = MockLlmProvider;
 
-    let live_llm = anthropic.is_some() || ollama.is_some();
+    let live_llm = anthropic.is_some() || gemini.is_some() || ollama.is_some();
     let mut providers: Vec<&dyn LlmProvider> = Vec::new();
     if let Some(a) = anthropic.as_ref() {
         providers.push(a);
+    }
+    if let Some(g) = gemini.as_ref() {
+        providers.push(g);
     }
     if let Some(o) = ollama.as_ref() {
         providers.push(o);
