@@ -30,6 +30,7 @@ fn entry(
             id: id.into(),
             name: name.into(),
             project: project.into(),
+            org: "contoso".into(),
             status,
             unsupported_steps,
             manual_tasks,

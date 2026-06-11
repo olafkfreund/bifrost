@@ -58,6 +58,7 @@ pub async fn audit_org(
             id: src.id,
             name: src.name.clone(),
             project: src.project,
+            org: config.org.clone(),
             status: ProposalStatus::NotStarted,
             unsupported_steps: dry_run.gaps_of(GapKind::UnsupportedStep).count() as u32,
             manual_tasks: dry_run.gaps_of(GapKind::ManualTask).count() as u32,
@@ -136,6 +137,7 @@ pub async fn audit_portfolio(
             id: src.id,
             name: src.name.clone(),
             project: src.project,
+            org: config.org.clone(),
             status: ProposalStatus::NotStarted,
             unsupported_steps: audit.build_steps.unsupported,
             manual_tasks: audit.manual_tasks.len() as u32,
@@ -160,6 +162,50 @@ pub async fn audit_portfolio(
         },
         pipelines,
     })
+}
+
+/// Merge several per-org [`Portfolio`] audits into one tenant-wide portfolio
+/// (#156). Pipelines (already org-tagged) are concatenated and totals recomputed
+/// (`totals.orgs` counts the distinct orgs); the summary's org field lists them.
+/// Tool provenance is taken from the first audit (orgs are audited with the same
+/// pinned Importer).
+pub fn merge_portfolios(
+    portfolios: Vec<Portfolio>,
+    generated_at: impl Into<String>,
+    air_gap: bool,
+) -> Portfolio {
+    let mut pipelines = Vec::new();
+    let mut importer_version = String::new();
+    let mut importer_image_digest = String::new();
+    let mut ado2gh_version = String::new();
+    for p in portfolios {
+        if importer_version.is_empty() {
+            importer_version = p.summary.importer_version;
+            importer_image_digest = p.summary.importer_image_digest;
+            ado2gh_version = p.summary.ado2gh_version;
+        }
+        pipelines.extend(p.pipelines);
+    }
+    let totals = Portfolio::totals_from(&pipelines);
+    let mut orgs: Vec<&str> = pipelines
+        .iter()
+        .map(|p| p.org.as_str())
+        .filter(|s| !s.is_empty())
+        .collect();
+    orgs.sort_unstable();
+    orgs.dedup();
+    Portfolio {
+        summary: PortfolioSummary {
+            org: orgs.join(", "),
+            importer_version,
+            importer_image_digest,
+            ado2gh_version,
+            air_gap,
+            generated_at: generated_at.into(),
+            totals,
+        },
+        pipelines,
+    }
 }
 
 #[cfg(test)]
@@ -224,6 +270,36 @@ mod tests {
             .unwrap();
         let t = &portfolio.summary.totals;
         assert_eq!(t.green + t.amber + t.red, t.pipelines);
+    }
+
+    #[tokio::test]
+    async fn merge_combines_orgs_and_recomputes_totals() {
+        let cfg = |org: &str| AuditConfig {
+            org: org.into(),
+            ..config()
+        };
+        // Two orgs, each audited separately (MockSourceAdapter has 2 pipelines).
+        let alpha = audit_org(&MockSourceAdapter::new(), &MockImporter, cfg("alpha"))
+            .await
+            .unwrap();
+        let beta = audit_org(&MockSourceAdapter::new(), &MockImporter, cfg("beta"))
+            .await
+            .unwrap();
+
+        let merged = merge_portfolios(vec![alpha, beta], "2026-06-11T00:00:00Z", true);
+        assert_eq!(merged.pipelines.len(), 4);
+        assert_eq!(merged.summary.totals.pipelines, 4);
+        assert_eq!(merged.summary.totals.orgs, 2);
+        assert_eq!(merged.summary.org, "alpha, beta");
+        // Every pipeline carries its source org.
+        assert_eq!(
+            merged.pipelines.iter().filter(|p| p.org == "alpha").count(),
+            2
+        );
+        assert_eq!(
+            merged.pipelines.iter().filter(|p| p.org == "beta").count(),
+            2
+        );
     }
 
     #[tokio::test]

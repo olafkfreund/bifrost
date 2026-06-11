@@ -33,6 +33,8 @@ export interface Pipeline {
   id: string
   name: string
   project: string
+  /** Owning source org (multi-org). Empty for single-org audits. */
+  org?: string
   classification: Classification
   /** Importer outcome: share of steps converted automatically (0–1). */
   convertedRatio: number
@@ -59,6 +61,8 @@ export interface PortfolioSummary {
   generatedAt: string
   totals: {
     pipelines: number
+    /** Distinct source orgs across the portfolio (multi-org). */
+    orgs?: number
     projects: number
     yaml: number
     classic: number
