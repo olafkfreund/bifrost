@@ -39,6 +39,9 @@ pub fn build_pipeline(meta: PipelineMeta, signals: &RiskSignals) -> Pipeline {
         status: meta.status,
         forecast_minutes: meta.forecast_minutes,
         factors: assessment.factors,
+        // Review metadata is overlaid from the proposal store at serve time.
+        reviewer: None,
+        reviewed_at: None,
     }
 }
 

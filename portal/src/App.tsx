@@ -8,6 +8,7 @@ import { PipelineTable } from './components/PipelineTable'
 import { PipelineDrawer } from './components/PipelineDrawer'
 import { ProposalPanel } from './components/ProposalPanel'
 import { DocsPage } from './components/DocsPage'
+import { ReviewQueue } from './components/ReviewQueue'
 import { riskMeta } from './lib/format'
 import { useTheme } from './lib/theme'
 
@@ -15,7 +16,7 @@ const api = createApi()
 
 type View = 'heatmap' | 'table'
 type Filter = RiskBand | 'all'
-type Page = 'portfolio' | 'docs'
+type Page = 'portfolio' | 'review' | 'docs'
 
 export default function App() {
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null)
@@ -56,6 +57,8 @@ export default function App() {
         <div className="flex flex-1 items-center justify-center text-ink-300">
           <div className="animate-pulse">Loading portfolio…</div>
         </div>
+      ) : page === 'review' ? (
+        <ReviewQueue pipelines={portfolio.pipelines} onSelect={setProposalFor} />
       ) : (
         <main className="mx-auto w-full max-w-7xl flex-1 px-6 py-6">
           <div className="mb-5 flex flex-wrap items-end justify-between gap-3">

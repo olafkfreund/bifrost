@@ -26,10 +26,27 @@ const LEGAL: Record<ProposalStatus, ProposalStatus[]> = {
 /** States in which the workflow can still be edited (mirrors `record_edit`). */
 const EDITABLE: ProposalStatus[] = ['draft', 'in_review', 'changes_requested']
 
+/** Lifecycle predecessor, used to seed a coherent audit event in mock mode. */
+const PREDECESSOR: Partial<Record<ProposalStatus, ProposalStatus>> = {
+  in_review: 'draft',
+  changes_requested: 'in_review',
+  approved: 'in_review',
+  committed: 'approved',
+  validated: 'committed',
+}
+
 /** Synthesize a representative proposal so the mock client exercises the UI. */
 function mockConversion(id: string): ConversionResult {
   const p = mockPortfolio.pipelines.find((x) => x.id === id || x.name === id)
   const name = p?.name ?? id
+  // Seed the proposal from the pipeline's portfolio status so opening it from the
+  // review queue is consistent (over HTTP the server overlays this for real).
+  const status: ProposalStatus = p && p.status !== 'not_started' ? p.status : 'draft'
+  const from = PREDECESSOR[status]
+  const audit: AuditEvent[] =
+    p?.reviewer && from
+      ? [{ proposalId: `prop-${id}`, actor: p.reviewer, from, to: status, at: p.reviewedAt ?? new Date().toISOString() }]
+      : []
   return {
     proposal: {
       id: `prop-${id}`,
@@ -44,7 +61,7 @@ function mockConversion(id: string): ConversionResult {
       riskScore: p?.riskScore ?? 50,
       promptId: 'gap-fill.v1',
       confidence: 0.5,
-      status: 'draft',
+      status,
     },
     runbook: {
       items: [
@@ -68,7 +85,7 @@ function mockConversion(id: string): ConversionResult {
         },
       ],
     },
-    audit: [],
+    audit,
   }
 }
 

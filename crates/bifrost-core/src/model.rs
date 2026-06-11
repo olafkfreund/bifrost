@@ -63,6 +63,12 @@ pub struct Pipeline {
     /// Forecast Actions runner-minutes/month for this pipeline.
     pub forecast_minutes: u32,
     pub factors: Vec<RiskFactor>,
+    /// Who last acted on the proposal (from the latest audit event), if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewer: Option<String>,
+    /// When the proposal was last acted on (ISO-8601), if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
