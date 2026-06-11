@@ -108,6 +108,37 @@ impl Proposal {
             from,
             to,
             at: at.into(),
+            note: None,
+        });
+        Ok(())
+    }
+
+    /// Replace the proposed workflow with a reviewer's edit, recording it.
+    ///
+    /// Edits are only allowed before approval (`Draft`, `InReview`,
+    /// `ChangesRequested`) — once approved, the reviewed artifact is frozen. The
+    /// edit is logged as a same-state (`from == to`) audit event with a note, so
+    /// the trail shows what the reviewer changed without faking a transition.
+    pub fn record_edit(
+        &mut self,
+        proposed_yaml: impl Into<String>,
+        actor: impl Into<String>,
+        at: impl Into<String>,
+        log: &mut AuditLog,
+    ) -> Result<(), ProposalError> {
+        use ProposalStatus::*;
+        let status = self.status;
+        if !matches!(status, Draft | InReview | ChangesRequested) {
+            return Err(ProposalError::NotEditable { status });
+        }
+        self.proposed_yaml = proposed_yaml.into();
+        log.append(AuditEvent {
+            proposal_id: self.id.clone(),
+            actor: actor.into(),
+            from: status,
+            to: status,
+            at: at.into(),
+            note: Some("edited proposed_yaml".into()),
         });
         Ok(())
     }
@@ -139,6 +170,8 @@ pub enum ProposalError {
         from: ProposalStatus,
         to: ProposalStatus,
     },
+    #[error("proposal is not editable in state {status:?}")]
+    NotEditable { status: ProposalStatus },
 }
 
 #[cfg(test)]
@@ -257,5 +290,39 @@ mod tests {
             ProposalStatus::Approved,
             ProposalStatus::Draft
         ));
+    }
+
+    #[test]
+    fn editing_before_approval_updates_yaml_and_logs_a_same_state_event() {
+        let mut p = proposal();
+        let mut log = AuditLog::new();
+        p.transition(ProposalStatus::InReview, "r", "t1", &mut log)
+            .unwrap();
+        p.record_edit("steps:\n  - run: echo edited\n", "editor", "t2", &mut log)
+            .expect("editable while in review");
+        assert!(p.proposed_yaml.contains("echo edited"));
+        // The edit is recorded as a same-state event with a note (not a transition).
+        let last = log.events().last().unwrap();
+        assert_eq!(last.from, ProposalStatus::InReview);
+        assert_eq!(last.to, ProposalStatus::InReview);
+        assert_eq!(last.note.as_deref(), Some("edited proposed_yaml"));
+    }
+
+    #[test]
+    fn editing_after_approval_is_rejected() {
+        let mut p = proposal();
+        let mut log = AuditLog::new();
+        p.transition(ProposalStatus::InReview, "r", "t1", &mut log)
+            .unwrap();
+        p.transition(ProposalStatus::Approved, "r", "t2", &mut log)
+            .unwrap();
+        let err = p.record_edit("nope", "editor", "t3", &mut log).unwrap_err();
+        assert!(matches!(
+            err,
+            ProposalError::NotEditable {
+                status: ProposalStatus::Approved
+            }
+        ));
+        assert_eq!(log.len(), 2); // edit not recorded
     }
 }

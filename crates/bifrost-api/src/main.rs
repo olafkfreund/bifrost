@@ -10,50 +10,152 @@
 
 mod sample;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{
-    routing::{get, post},
+    routing::{get, patch, post},
     Json, Router,
 };
 use bifrost_adapters::{convert_pipeline, ConversionOutcome, MockImporter};
-use bifrost_core::{Classification, Portfolio};
+use bifrost_core::{AuditLog, Classification, Portfolio, Proposal, ProposalStatus, Runbook};
 use bifrost_llm::{MockLlmProvider, Router as LlmRouter, RoutingPolicy};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
-type Shared = Arc<RwLock<Portfolio>>;
+/// A converted proposal held in the control plane, with its append-only audit
+/// trail. In-memory for now — durable persistence (Postgres/SQLite) is #45/#46.
+struct StoredProposal {
+    proposal: Proposal,
+    runbook: Runbook,
+    audit: AuditLog,
+}
+
+/// Shared server state: the portfolio plus the proposal store (keyed by proposal id).
+struct AppState {
+    portfolio: RwLock<Portfolio>,
+    proposals: RwLock<HashMap<String, StoredProposal>>,
+}
+
+type Shared = Arc<AppState>;
+
+/// The proposal id the conversion loop assigns for a pipeline (see `run_conversion`).
+fn proposal_id_for(pipeline_id: &str) -> String {
+    format!("prop-{pipeline_id}")
+}
+
+/// Serialize a stored proposal for the wire: `{ proposal, runbook, audit }`.
+fn record_json(rec: &StoredProposal) -> Value {
+    json!({
+        "proposal": rec.proposal,
+        "runbook": rec.runbook,
+        "audit": rec.audit.events(),
+    })
+}
 
 async fn health() -> Json<Value> {
     Json(json!({ "status": "ok", "service": "bifrost-api" }))
 }
 
 async fn portfolio(State(state): State<Shared>) -> Json<Portfolio> {
-    Json(state.read().await.clone())
+    Json(state.portfolio.read().await.clone())
 }
 
 /// Re-resolve the portfolio (e.g. re-run the live audit) and update the cache.
 async fn refresh(State(state): State<Shared>) -> Json<Portfolio> {
     let fresh = resolve_portfolio().await;
-    *state.write().await = fresh.clone();
+    *state.portfolio.write().await = fresh.clone();
     Json(fresh)
 }
 
-/// Convert one pipeline into a [`ConversionOutcome`] (proposal + runbook).
+/// Convert one pipeline into a proposal (+ runbook), storing it for review.
 ///
-/// Returns `{ proposal, runbook }` as JSON, or a 500 with the error message.
-async fn convert(Path(id): Path<String>) -> Result<Json<Value>, (StatusCode, String)> {
+/// Idempotent: a pipeline already converted returns its stored record (with any
+/// edits/transitions intact) rather than reconverting, so review state survives
+/// re-opening the panel. Returns `{ proposal, runbook, audit }`.
+async fn convert(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let proposal_id = proposal_id_for(&id);
+
+    if let Some(rec) = state.proposals.read().await.get(&proposal_id) {
+        return Ok(Json(record_json(rec)));
+    }
+
     let outcome = run_conversion(&id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(json!({
-        "proposal": outcome.proposal,
-        "runbook": outcome.runbook,
-    })))
+    let rec = StoredProposal {
+        proposal: outcome.proposal,
+        runbook: outcome.runbook,
+        audit: AuditLog::new(),
+    };
+    let body = record_json(&rec);
+    state.proposals.write().await.insert(proposal_id, rec);
+    Ok(Json(body))
+}
+
+/// Body of `POST /api/proposals/:id/transition`: the target lifecycle state and
+/// the acting identity (placeholder until auth — #65).
+#[derive(Deserialize)]
+struct TransitionBody {
+    to: ProposalStatus,
+    #[serde(default)]
+    actor: Option<String>,
+}
+
+/// Move a proposal through the lifecycle state machine, recording the audit event.
+///
+/// 404 if the proposal is unknown; 409 if the edge is illegal (the state machine
+/// rejects it and nothing is logged).
+async fn transition(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+    Json(body): Json<TransitionBody>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let mut store = state.proposals.write().await;
+    let rec = store
+        .get_mut(&id)
+        .ok_or((StatusCode::NOT_FOUND, format!("no proposal '{id}'")))?;
+    let actor = body.actor.unwrap_or_else(|| "reviewer@portal".into());
+    rec.proposal
+        .transition(body.to, actor, now_iso8601(), &mut rec.audit)
+        .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
+    Ok(Json(record_json(rec)))
+}
+
+/// Body of `PATCH /api/proposals/:id`: the reviewer's edited workflow.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EditBody {
+    proposed_yaml: String,
+    #[serde(default)]
+    actor: Option<String>,
+}
+
+/// Replace a proposal's workflow with a reviewer edit, recording it.
+///
+/// 404 if unknown; 409 if the proposal is past approval (frozen).
+async fn edit(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+    Json(body): Json<EditBody>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let mut store = state.proposals.write().await;
+    let rec = store
+        .get_mut(&id)
+        .ok_or((StatusCode::NOT_FOUND, format!("no proposal '{id}'")))?;
+    let actor = body.actor.unwrap_or_else(|| "reviewer@portal".into());
+    rec.proposal
+        .record_edit(body.proposed_yaml, actor, now_iso8601(), &mut rec.audit)
+        .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
+    Ok(Json(record_json(rec)))
 }
 
 /// Run the conversion loop for `pipeline_id` with the offline provider set.
@@ -92,6 +194,8 @@ fn app(state: Shared) -> Router {
         .route("/api/portfolio", get(portfolio))
         .route("/api/refresh", post(refresh))
         .route("/api/pipelines/:id/convert", post(convert))
+        .route("/api/proposals/:id/transition", post(transition))
+        .route("/api/proposals/:id", patch(edit))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -170,7 +274,10 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     // Resolve the portfolio once at startup (a live audit may take a while).
-    let state: Shared = Arc::new(RwLock::new(resolve_portfolio().await));
+    let state: Shared = Arc::new(AppState {
+        portfolio: RwLock::new(resolve_portfolio().await),
+        proposals: RwLock::new(HashMap::new()),
+    });
 
     let addr = std::env::var("BIFROST_API_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -195,5 +302,126 @@ mod tests {
         // Assembled workflow + populated manual-task runbook are present.
         assert!(outcome.proposal.proposed_yaml.contains("REVIEW BEFORE USE"));
         assert!(!outcome.runbook.is_empty());
+    }
+
+    fn test_state() -> Shared {
+        Arc::new(AppState {
+            portfolio: RwLock::new(sample::portfolio()),
+            proposals: RwLock::new(HashMap::new()),
+        })
+    }
+
+    #[tokio::test]
+    async fn convert_stores_then_transition_walks_the_lifecycle() {
+        let state = test_state();
+
+        // Convert → a stored Draft with an empty audit trail.
+        let body = convert(State(state.clone()), Path("SARC-main".into()))
+            .await
+            .unwrap()
+            .0;
+        let pid = body["proposal"]["id"].as_str().unwrap().to_string();
+        assert_eq!(body["proposal"]["status"], "draft");
+        assert_eq!(body["audit"].as_array().unwrap().len(), 0);
+
+        // Re-convert is idempotent — same proposal, not a fresh one.
+        let again = convert(State(state.clone()), Path("SARC-main".into()))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(again["proposal"]["id"], body["proposal"]["id"]);
+
+        // draft → in_review → approved, each recorded.
+        for to in [ProposalStatus::InReview, ProposalStatus::Approved] {
+            let r = transition(
+                State(state.clone()),
+                Path(pid.clone()),
+                Json(TransitionBody {
+                    to,
+                    actor: Some("rev@x".into()),
+                }),
+            )
+            .await
+            .unwrap()
+            .0;
+            assert_eq!(r["proposal"]["status"], serde_json::to_value(to).unwrap());
+        }
+        let after = convert(State(state.clone()), Path("SARC-main".into()))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(after["audit"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn illegal_transition_and_edit_after_approval_are_409_unknown_is_404() {
+        let state = test_state();
+        let body = convert(State(state.clone()), Path("SARC-main".into()))
+            .await
+            .unwrap()
+            .0;
+        let pid = body["proposal"]["id"].as_str().unwrap().to_string();
+
+        // draft → approved skips in_review: rejected with 409.
+        let err = transition(
+            State(state.clone()),
+            Path(pid.clone()),
+            Json(TransitionBody {
+                to: ProposalStatus::Approved,
+                actor: None,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::CONFLICT);
+
+        // Editable while still Draft.
+        let edited = edit(
+            State(state.clone()),
+            Path(pid.clone()),
+            Json(EditBody {
+                proposed_yaml: "steps: []\n".into(),
+                actor: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(edited["proposal"]["proposedYaml"], "steps: []\n");
+
+        // Walk to Approved, then editing is frozen (409).
+        for to in [ProposalStatus::InReview, ProposalStatus::Approved] {
+            let _ = transition(
+                State(state.clone()),
+                Path(pid.clone()),
+                Json(TransitionBody { to, actor: None }),
+            )
+            .await
+            .unwrap();
+        }
+        let err = edit(
+            State(state.clone()),
+            Path(pid.clone()),
+            Json(EditBody {
+                proposed_yaml: "x".into(),
+                actor: None,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::CONFLICT);
+
+        // Unknown proposal → 404.
+        let err = transition(
+            State(state.clone()),
+            Path("prop-nope".into()),
+            Json(TransitionBody {
+                to: ProposalStatus::InReview,
+                actor: None,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.0, StatusCode::NOT_FOUND);
     }
 }

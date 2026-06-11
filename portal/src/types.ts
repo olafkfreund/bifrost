@@ -114,8 +114,21 @@ export interface Proposal {
   status: ProposalStatus
 }
 
+/** One immutable entry in a proposal's attestation trail. */
+export interface AuditEvent {
+  proposalId: string
+  actor: string
+  from: ProposalStatus
+  to: ProposalStatus
+  at: string
+  /** Set for content actions (e.g. an edit) that don't move state. */
+  note?: string
+}
+
 /** The conversion-loop output the `/convert` endpoint returns. */
 export interface ConversionResult {
   proposal: Proposal
   runbook: Runbook
+  /** The proposal's audit trail, oldest first. */
+  audit: AuditEvent[]
 }
