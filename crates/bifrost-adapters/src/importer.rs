@@ -222,6 +222,97 @@ pub fn parse_dry_run(log: &str) -> DryRunResult {
     }
 }
 
+/// Parse the gaps out of a converted GitHub Actions workflow the Importer emits.
+///
+/// The Importer leaves unsupported steps as commented `# This item has no
+/// matching transformer` blocks, maps service connections / secret refs to
+/// `${{ secrets.* }}` (a human must still provision the values), and writes
+/// `environment:` blocks (a human must create the Environment). We turn each into
+/// a typed [`Gap`] so the conversion loop can split them (LLM gap-fill vs. the
+/// manual runbook). The converted YAML itself is the Importer's baseline output.
+pub fn parse_converted_workflow(workflow: &str) -> Vec<Gap> {
+    let lines: Vec<&str> = workflow.lines().collect();
+    let mut gaps = Vec::new();
+
+    // 1. Unsupported steps: a "no matching transformer" marker, then the first
+    //    following commented `task:` line names the construct.
+    for (i, line) in lines.iter().enumerate() {
+        if !line.contains("no matching transformer") {
+            continue;
+        }
+        for next in lines.iter().skip(i + 1).take(8) {
+            let trimmed = next.trim_start_matches(['#', ' ', '-']);
+            if let Some(rest) = trimmed.strip_prefix("task:") {
+                gaps.push(Gap {
+                    kind: GapKind::UnsupportedStep,
+                    construct: rest.trim().to_string(),
+                    detail: "no matching GitHub Actions transformer — needs a replacement".into(),
+                });
+                break;
+            }
+        }
+    }
+
+    // 2. Secrets to provision (mapped from service connections / secret refs).
+    let mut secrets = std::collections::BTreeSet::new();
+    let mut rest = workflow;
+    while let Some(pos) = rest.find("secrets.") {
+        if let Some(name) = secret_name(&rest[pos..]) {
+            secrets.insert(name);
+        }
+        rest = &rest[pos + "secrets.".len()..];
+    }
+    for name in secrets {
+        gaps.push(Gap {
+            kind: GapKind::ManualTask,
+            construct: "secret".into(),
+            detail: format!("{name} must be provisioned as a repository/organization secret"),
+        });
+    }
+
+    // 3. Environments to recreate (`environment:` then a `name:`).
+    for (i, line) in lines.iter().enumerate() {
+        if line.trim_end().ends_with("environment:") {
+            if let Some(name) = lines
+                .get(i + 1)
+                .and_then(|l| l.trim().strip_prefix("name:"))
+            {
+                gaps.push(Gap {
+                    kind: GapKind::ManualTask,
+                    construct: "environment".into(),
+                    detail: format!("{} must be recreated as a GitHub Environment", name.trim()),
+                });
+            }
+        }
+    }
+
+    gaps
+}
+
+/// Share of steps converted, given the converted workflow and its gaps. Counts
+/// real (uncommented) step starts against those plus the unsupported steps.
+pub fn converted_ratio(workflow: &str, gaps: &[Gap]) -> f64 {
+    let converted = workflow
+        .lines()
+        .filter(|l| {
+            let t = l.trim_start();
+            !t.starts_with('#')
+                && t.starts_with("- ")
+                && (t.contains("uses:") || t.contains("run:") || t.contains("name:"))
+        })
+        .count();
+    let unsupported = gaps
+        .iter()
+        .filter(|g| g.kind == GapKind::UnsupportedStep)
+        .count();
+    let total = converted + unsupported;
+    if total == 0 {
+        1.0
+    } else {
+        converted as f64 / total as f64
+    }
+}
+
 /// Errors the Importer wrapper can surface.
 #[derive(Debug, thiserror::Error)]
 pub enum ImporterError {
@@ -389,5 +480,42 @@ mod tests {
         let r = imp.dry_run("payments-api-deploy").await.unwrap();
         assert_eq!(r.pipeline_id, "payments-api-deploy"); // id overridden to request
         assert!(!r.gaps.is_empty());
+    }
+
+    // A real converted workflow captured from `gh actions-importer` (Contoso-CI).
+    const CONVERTED: &str = include_str!("../../../fixtures/importer_converted_workflow.yml");
+
+    #[test]
+    fn parses_unsupported_steps_from_a_real_converted_workflow() {
+        let gaps = parse_converted_workflow(CONVERTED);
+        let unsupported: Vec<_> = gaps
+            .iter()
+            .filter(|g| g.kind == GapKind::UnsupportedStep)
+            .map(|g| g.construct.as_str())
+            .collect();
+        // The Importer commented these out as "no matching transformer".
+        assert!(
+            unsupported.contains(&"DownloadSecureFile@1"),
+            "got {unsupported:?}"
+        );
+        assert!(
+            unsupported.contains(&"SonarQubePrepare@5"),
+            "got {unsupported:?}"
+        );
+        // Converted ratio is between 0 and 1 (some steps converted, some not).
+        let ratio = converted_ratio(CONVERTED, &gaps);
+        assert!(ratio > 0.0 && ratio < 1.0, "ratio = {ratio}");
+    }
+
+    #[test]
+    fn parses_secret_and_environment_manual_tasks() {
+        let wf = "jobs:\n  deploy:\n    environment:\n      name: contoso-prod\n    steps:\n      - uses: azure/login@v1\n        with:\n          creds: \"${{ secrets.AZURE_CREDENTIALS }}\"\n";
+        let gaps = parse_converted_workflow(wf);
+        assert!(gaps
+            .iter()
+            .any(|g| g.construct == "secret" && g.detail.contains("AZURE_CREDENTIALS")));
+        assert!(gaps
+            .iter()
+            .any(|g| g.construct == "environment" && g.detail.contains("contoso-prod")));
     }
 }

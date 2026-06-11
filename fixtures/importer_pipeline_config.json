@@ -1,0 +1,104 @@
+{
+  "triggers": [
+    {
+      "branchFilters": [
+        "+main",
+        "+releases/*"
+      ],
+      "pathFilters": [
+
+      ],
+      "settingsSourceType": 2,
+      "batchChanges": false,
+      "maxConcurrentBuildsPerBranch": 1,
+      "triggerType": "continuousIntegration",
+      "tagFilters": [
+
+      ]
+    }
+  ],
+  "properties": {
+  },
+  "tags": [
+
+  ],
+  "_links": {
+    "self": {
+      "href": "https://dev.azure.com/olaffreund0455/ea5daac6-3af4-45ab-adf2-9f34fd003f4a/_apis/build/Definitions/11?revision=1"
+    },
+    "web": {
+      "href": "https://dev.azure.com/olaffreund0455/ea5daac6-3af4-45ab-adf2-9f34fd003f4a/_build/definition?definitionId=11"
+    },
+    "editor": {
+      "href": "https://dev.azure.com/olaffreund0455/ea5daac6-3af4-45ab-adf2-9f34fd003f4a/_build/designer?id=11&_a=edit-build-definition"
+    },
+    "badge": {
+      "href": "https://dev.azure.com/olaffreund0455/ea5daac6-3af4-45ab-adf2-9f34fd003f4a/_apis/build/status/11"
+    }
+  },
+  "jobAuthorizationScope": "projectCollection",
+  "process": {
+    "yamlFilename": "/azure-pipelines.yml",
+    "type": 2
+  },
+  "repository": {
+    "id": "7167d45b-bd59-4b60-af1b-78ed2662728a",
+    "type": "TfsGit",
+    "name": "Contoso-Payments",
+    "url": "https://dev.azure.com/olaffreund0455/Contoso-Payments/_git/Contoso-Payments",
+    "defaultBranch": "refs/heads/main",
+    "clean": null,
+    "checkoutSubmodules": false
+  },
+  "quality": "definition",
+  "authoredBy": {
+    "displayName": "Olaf Krasicki-Freund",
+    "url": "https://spsproduks1.vssps.visualstudio.com/A0cbd9654-8fe5-472e-b2db-1296829cd572/_apis/Identities/a263a4ef-ecde-4b06-acc1-d7a320f6262f",
+    "_links": {
+      "avatar": {
+        "href": "https://dev.azure.com/olaffreund0455/_apis/GraphProfile/MemberAvatars/aad.ZjU5NGU1NDMtYWFkZC03ZTlkLTllNWQtNGEwOTg1ZDVjNTc5"
+      }
+    },
+    "id": "a263a4ef-ecde-4b06-acc1-d7a320f6262f",
+    "uniqueName": "olaf.freund@outlook.com",
+    "imageUrl": "https://dev.azure.com/olaffreund0455/_apis/GraphProfile/MemberAvatars/aad.ZjU5NGU1NDMtYWFkZC03ZTlkLTllNWQtNGEwOTg1ZDVjNTc5",
+    "descriptor": "aad.ZjU5NGU1NDMtYWFkZC03ZTlkLTllNWQtNGEwOTg1ZDVjNTc5"
+  },
+  "drafts": [
+
+  ],
+  "queue": {
+    "_links": {
+      "self": {
+        "href": "https://dev.azure.com/olaffreund0455/_apis/build/Queues/47"
+      }
+    },
+    "id": 47,
+    "name": "Azure Pipelines",
+    "url": "https://dev.azure.com/olaffreund0455/_apis/build/Queues/47",
+    "pool": {
+      "id": 9,
+      "name": "Azure Pipelines",
+      "isHosted": true
+    }
+  },
+  "id": 11,
+  "name": "Contoso-Payments-CI",
+  "url": "https://dev.azure.com/olaffreund0455/ea5daac6-3af4-45ab-adf2-9f34fd003f4a/_apis/build/Definitions/11?revision=1",
+  "uri": "vstfs:///Build/Definition/11",
+  "path": "\\",
+  "type": "build",
+  "queueStatus": "enabled",
+  "revision": 1,
+  "createdDate": "2026-06-11T12:29:16.47Z",
+  "project": {
+    "id": "ea5daac6-3af4-45ab-adf2-9f34fd003f4a",
+    "name": "Contoso-Payments",
+    "description": "Enterprise payments platform — Bifrost migration test data",
+    "url": "https://dev.azure.com/olaffreund0455/_apis/projects/ea5daac6-3af4-45ab-adf2-9f34fd003f4a",
+    "state": "wellFormed",
+    "revision": 60,
+    "visibility": "private",
+    "lastUpdateTime": "2026-06-11T12:27:26.24Z"
+  }
+}

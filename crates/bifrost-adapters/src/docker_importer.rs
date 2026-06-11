@@ -17,7 +17,9 @@ use std::path::PathBuf;
 use bifrost_core::{AuditSummary, DryRunResult};
 use tokio::process::Command;
 
-use crate::importer::{parse_audit_summary, Importer, ImporterError};
+use crate::importer::{
+    converted_ratio, parse_audit_summary, parse_converted_workflow, Importer, ImporterError,
+};
 
 const DEFAULT_IMAGE: &str = "ghcr.io/actions-importer/cli:latest";
 /// Hard cap on any single file the Importer writes (1 GiB) — bounds a runaway
@@ -98,6 +100,35 @@ impl Importer for DockerImporter {
     }
 
     async fn audit(&self) -> Result<AuditSummary, ImporterError> {
+        let out_dir = self.run_audit().await?;
+        let summary_path = out_dir.join("report").join("audit_summary.md");
+        let result = tokio::fs::read_to_string(&summary_path)
+            .await
+            .map(|md| parse_audit_summary(&md))
+            .map_err(|e| Self::err(format!("could not read audit_summary.md: {e}")));
+        let _ = tokio::fs::remove_dir_all(&out_dir).await;
+        result
+    }
+
+    async fn dry_run(&self, pipeline_id: &str) -> Result<DryRunResult, ImporterError> {
+        // The Importer's per-pipeline output already contains everything a
+        // dry-run needs: the converted workflow (its gaps marked inline), the ADO
+        // source, and the definition id (in config.json). Audit the project, then
+        // read the requested pipeline's report.
+        let out_dir = self.run_audit().await?;
+        let pipelines_dir = out_dir.join("report").join("pipelines").join(&self.project);
+
+        let result = self.read_pipeline(&pipelines_dir, pipeline_id).await;
+        let _ = tokio::fs::remove_dir_all(&out_dir).await;
+        result
+    }
+}
+
+impl DockerImporter {
+    /// Run `audit azure-devops` for the project into a fresh work dir and return
+    /// it. Guards against filling the disk: a per-file size cap, host-user output
+    /// (cleanable), and a redirectable work dir. Callers clean the dir when done.
+    async fn run_audit(&self) -> Result<PathBuf, ImporterError> {
         let (gh, pat) = Self::creds()?;
         // Work dir — redirectable off a small tmpfs via BIFROST_IMPORTER_WORKDIR.
         let base = std::env::var("BIFROST_IMPORTER_WORKDIR")
@@ -142,30 +173,79 @@ impl Importer for DockerImporter {
         // Surface the importer's own logs on stderr for visibility.
         eprint!("{}", String::from_utf8_lossy(&out.stdout));
         eprint!("{}", String::from_utf8_lossy(&out.stderr));
+        if !out.status.success() {
+            let _ = tokio::fs::remove_dir_all(&out_dir).await;
+            return Err(Self::err("importer audit failed (see docker output)"));
+        }
+        Ok(out_dir)
+    }
 
-        // Read the summary, then always clean the work dir (host-owned, so this
-        // succeeds) — a runaway never lingers, even on success.
-        let result = if out.status.success() {
-            let summary_path = out_dir.join("report").join("audit_summary.md");
-            tokio::fs::read_to_string(&summary_path)
+    /// Read the per-pipeline report matching `pipeline_id` (by definition id in
+    /// config.json, else by directory name) into a [`DryRunResult`].
+    async fn read_pipeline(
+        &self,
+        pipelines_dir: &std::path::Path,
+        pipeline_id: &str,
+    ) -> Result<DryRunResult, ImporterError> {
+        let mut entries = tokio::fs::read_dir(pipelines_dir)
+            .await
+            .map_err(|e| Self::err(format!("no pipeline reports: {e}")))?;
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let dir = entry.path();
+            if !dir.is_dir() {
+                continue;
+            }
+            let name_match = dir.file_name().and_then(|n| n.to_str()) == Some(pipeline_id);
+            let config = tokio::fs::read_to_string(dir.join("config.json"))
                 .await
-                .map(|md| parse_audit_summary(&md))
-                .map_err(|e| Self::err(format!("could not read audit_summary.md: {e}")))
-        } else {
-            Err(Self::err("importer audit failed (see docker output)"))
-        };
-        let _ = tokio::fs::remove_dir_all(&out_dir).await;
-        result
-    }
+                .unwrap_or_default();
+            let id_match = definition_id(&config) == Some(pipeline_id.to_string());
+            if !(name_match || id_match) {
+                continue;
+            }
 
-    async fn dry_run(&self, _pipeline_id: &str) -> Result<DryRunResult, ImporterError> {
-        // The real dry-run log format hasn't been captured/validated yet; the
-        // audit already yields per-pipeline conversion stats for single-pipeline
-        // orgs. Tracked as a follow-up rather than shipping an unvalidated parser.
-        Err(Self::err(
-            "dry_run via Docker not yet wrapped — use audit()",
-        ))
+            let source_yaml = tokio::fs::read_to_string(dir.join("source.yml"))
+                .await
+                .unwrap_or_default();
+            let converted_yaml = read_converted_workflow(&dir).await.unwrap_or_default();
+            let gaps = parse_converted_workflow(&converted_yaml);
+            let converted_ratio = converted_ratio(&converted_yaml, &gaps);
+            return Ok(DryRunResult {
+                pipeline_id: pipeline_id.to_string(),
+                converted_ratio,
+                gaps,
+                converted_yaml,
+                source_yaml,
+            });
+        }
+        Err(Self::err(format!(
+            "no report for pipeline '{pipeline_id}' in project '{}'",
+            self.project
+        )))
     }
+}
+
+/// The ADO build-definition id from a report's `config.json` (`…/Definitions/<id>`).
+fn definition_id(config_json: &str) -> Option<String> {
+    let pos = config_json.find("Definitions/")? + "Definitions/".len();
+    let id: String = config_json[pos..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    (!id.is_empty()).then_some(id)
+}
+
+/// Read the first converted workflow under `<dir>/.github/workflows/`.
+async fn read_converted_workflow(dir: &std::path::Path) -> Option<String> {
+    let wf_dir = dir.join(".github").join("workflows");
+    let mut entries = tokio::fs::read_dir(&wf_dir).await.ok()?;
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let p = entry.path();
+        if p.extension().and_then(|e| e.to_str()) == Some("yml") {
+            return tokio::fs::read_to_string(&p).await.ok();
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -178,6 +258,13 @@ mod tests {
         assert_eq!(org_from_url("https://dev.azure.com/contoso/"), "contoso");
     }
 
+    #[test]
+    fn extracts_definition_id_from_config() {
+        let cfg = r#"{"_links":{"self":{"href":"https://dev.azure.com/o/x/_apis/build/Definitions/11?revision=1"}}}"#;
+        assert_eq!(definition_id(cfg), Some("11".to_string()));
+        assert_eq!(definition_id("{}"), None);
+    }
+
     /// Live: pull-and-run the image. Skipped by default (needs Docker + creds).
     #[tokio::test]
     #[ignore = "requires Docker + live ADO/GitHub credentials"]
@@ -186,5 +273,27 @@ mod tests {
         let summary = imp.audit().await.expect("audit succeeds");
         assert!(summary.pipelines.total > 0);
         assert!(summary.build_steps.total > 0);
+    }
+
+    /// Live per-pipeline dry-run. Targets `BIFROST_TEST_PROJECT`/`BIFROST_TEST_PIPELINE`
+    /// (default Contoso-Payments / 11). Run with creds + `-- --ignored`.
+    #[tokio::test]
+    #[ignore = "requires Docker + live ADO/GitHub credentials"]
+    async fn live_dry_run_produces_a_real_conversion() {
+        let project =
+            std::env::var("BIFROST_TEST_PROJECT").unwrap_or_else(|_| "Contoso-Payments".into());
+        let pipeline = std::env::var("BIFROST_TEST_PIPELINE").unwrap_or_else(|_| "11".into());
+        let imp = DockerImporter::from_env(&project).unwrap();
+        let dry = imp.dry_run(&pipeline).await.expect("dry_run succeeds");
+        eprintln!(
+            "{project}/{pipeline}: converted={:.0}% gaps={} source={}B converted={}B",
+            dry.converted_ratio * 100.0,
+            dry.gaps.len(),
+            dry.source_yaml.len(),
+            dry.converted_yaml.len(),
+        );
+        assert!(!dry.converted_yaml.is_empty(), "has converted workflow");
+        assert!(!dry.source_yaml.is_empty(), "has ADO source");
+        assert!(!dry.gaps.is_empty(), "found gaps (DownloadSecureFile etc.)");
     }
 }

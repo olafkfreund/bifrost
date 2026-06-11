@@ -172,7 +172,9 @@ async fn convert_one(store: &dyn ProposalStore, pipeline_id: &str) -> JobItem {
             error: None,
         };
     }
-    match crate::run_conversion(pipeline_id).await {
+    // Bulk job uses the BIFROST_PROJECT / mock fallback; per-project live bulk
+    // conversion is a follow-up (single "Open proposal" is project-aware).
+    match crate::run_conversion(pipeline_id, None).await {
         Ok(outcome) => {
             let rec = StoredProposal {
                 proposal: outcome.proposal,
