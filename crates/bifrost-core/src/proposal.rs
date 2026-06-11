@@ -127,15 +127,16 @@ impl Proposal {
         log: &mut AuditLog,
     ) -> Result<(), ProposalError> {
         use ProposalStatus::*;
-        if !matches!(self.status, Draft | InReview | ChangesRequested) {
-            return Err(ProposalError::NotEditable { status: self.status });
+        let status = self.status;
+        if !matches!(status, Draft | InReview | ChangesRequested) {
+            return Err(ProposalError::NotEditable { status });
         }
         self.proposed_yaml = proposed_yaml.into();
         log.append(AuditEvent {
             proposal_id: self.id.clone(),
             actor: actor.into(),
-            from: self.status,
-            to: self.status,
+            from: status,
+            to: status,
             at: at.into(),
             note: Some("edited proposed_yaml".into()),
         });
@@ -316,12 +317,12 @@ mod tests {
         p.transition(ProposalStatus::Approved, "r", "t2", &mut log)
             .unwrap();
         let err = p.record_edit("nope", "editor", "t3", &mut log).unwrap_err();
-        assert_eq!(
+        assert!(matches!(
             err,
             ProposalError::NotEditable {
                 status: ProposalStatus::Approved
             }
-        );
+        ));
         assert_eq!(log.len(), 2); // edit not recorded
     }
 }
