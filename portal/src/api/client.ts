@@ -1,12 +1,18 @@
 import type {
   AuditEvent,
+  ConnectionView,
   ConversionResult,
   JobProgress,
   Pipeline,
   Portfolio,
   ProposalStatus,
+  SecretRefView,
 } from '../types'
 import { mockPortfolio } from '../data/portfolio'
+
+/** Create-connection payload (tagged by `kind`). Secrets are references; an
+ *  `inline` value is encrypted server-side. */
+export type ConnectionInput = Record<string, unknown> & { name: string; kind: string }
 
 // The portal depends only on this interface. Today it's backed by mock fixtures;
 // once the Rust control plane exists, `HttpBifrostApi` implements the same
@@ -22,6 +28,10 @@ export interface BifrostApi {
   startConvertJob(pipelineIds?: string[]): Promise<{ jobId: string; total: number }>
   /** Subscribe to a job's live progress. Returns an unsubscribe function. */
   subscribeJob(jobId: string, onUpdate: (progress: JobProgress) => void): () => void
+  /** Connections (#157) — Admin-only; the list is always redacted (no secrets). */
+  listConnections(): Promise<ConnectionView[]>
+  createConnection(input: ConnectionInput): Promise<ConnectionView>
+  deleteConnection(id: string): Promise<void>
 }
 
 /** Legal lifecycle edges — mirrors `is_legal_transition` in bifrost-core. */
@@ -211,6 +221,51 @@ class MockBifrostApi implements BifrostApi {
       cancelled = true
     }
   }
+
+  private connections: ConnectionView[] = []
+  async listConnections(): Promise<ConnectionView[]> {
+    return [...this.connections]
+  }
+  async createConnection(input: ConnectionInput): Promise<ConnectionView> {
+    // Build a redacted view mirroring the server (no secret values stored here).
+    const id = `conn-default-${String(input.name).toLowerCase().replace(/[^a-z0-9]+/g, '-')}`
+    const view = {
+      id,
+      tenant: 'default',
+      name: input.name,
+      kind: redactInput(input),
+      updatedBy: 'local@bifrost',
+      updatedAt: new Date().toISOString(),
+    } as ConnectionView
+    this.connections = [...this.connections.filter((c) => c.id !== id), view]
+    return view
+  }
+  async deleteConnection(id: string): Promise<void> {
+    this.connections = this.connections.filter((c) => c.id !== id)
+  }
+}
+
+/** Redact a create-input into a list-view kind (drops any inline plaintext). */
+function redactInput(input: ConnectionInput): ConnectionView['kind'] {
+  const redactAuth = (a: unknown): SecretRefView => {
+    const auth = a as { type?: string } & Record<string, unknown>
+    if (auth?.type === 'inline') return { type: 'encrypted-inline', ciphertext: '', nonce: '' }
+    return auth as unknown as SecretRefView
+  }
+  const k = input as Record<string, unknown>
+  if (input.kind === 'azure-devops')
+    return { kind: 'azure-devops', org_url: String(k.org_url ?? ''), auth: redactAuth(k.auth) }
+  if (input.kind === 'github')
+    return { kind: 'github', org: String(k.org ?? ''), auth: redactAuth(k.auth) }
+  return {
+    kind: 'llm',
+    provider: String(k.provider ?? ''),
+    base_url: k.base_url as string | undefined,
+    model: String(k.model ?? ''),
+    key: k.key ? redactAuth(k.key) : undefined,
+    is_local: Boolean(k.is_local),
+    residency: k.residency as string | undefined,
+  }
 }
 
 // When Entra SSO is enabled (backend `BIFROST_AUTH=entra`), the browser login
@@ -307,6 +362,30 @@ class HttpBifrostApi implements BifrostApi {
     }
 
     return () => es.close()
+  }
+
+  async listConnections(): Promise<ConnectionView[]> {
+    const res = await fetch(`${this.base}/connections`, { headers: this.headers() })
+    if (!res.ok) throw new Error(`connections request failed: ${res.status}`)
+    return ((await res.json()) as { connections: ConnectionView[] }).connections
+  }
+
+  async createConnection(input: ConnectionInput): Promise<ConnectionView> {
+    const res = await fetch(`${this.base}/connections`, {
+      method: 'POST',
+      headers: this.headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify(input),
+    })
+    if (!res.ok) throw new Error(`${res.status}: ${(await res.text()) || 'create failed'}`)
+    return ((await res.json()) as { connection: ConnectionView }).connection
+  }
+
+  async deleteConnection(id: string): Promise<void> {
+    const res = await fetch(`${this.base}/connections/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: this.headers(),
+    })
+    if (!res.ok) throw new Error(`${res.status}: ${(await res.text()) || 'delete failed'}`)
   }
 }
 
