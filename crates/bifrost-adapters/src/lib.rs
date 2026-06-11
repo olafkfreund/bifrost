@@ -11,6 +11,7 @@ pub mod importer;
 pub mod orchestrator;
 pub mod publisher;
 pub mod source;
+pub mod validate;
 
 pub use azure_devops::AzureDevOpsAdapter;
 pub use convert::{convert_pipeline, ConversionError, ConversionOutcome};
@@ -21,3 +22,7 @@ pub use publisher::{
     CommitRequest, CommitResult, GitHubPublisher, MockPublisher, PublishError, Publisher,
 };
 pub use source::{AdapterError, MockSourceAdapter, SourceAdapter};
+pub use validate::{
+    GitHubSandboxTrigger, MockSandboxTrigger, SandboxTrigger, TriggerRequest, TriggerResult,
+    ValidateError,
+};
