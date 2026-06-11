@@ -79,19 +79,21 @@ The React portal where humans review and approve.
 - Parity report + attestation recorded on the proposal before validation — done
 
 ## M6 — Compliance + Deploy
-{: .label .label-yellow }In progress
+{: .label .label-green }Done
 
 - Signed, exportable per-migration attestation (in-toto-inspired, HMAC-signed) — done
 - Per-org compliance audit pack export — done
 - GitHub App auth (least-privilege installation tokens) — done
 - Packaging: Docker Compose (self-host) + Helm chart (EKS/AKS/GKE) — done
-- Entra ID OIDC SSO for the portal — in progress
-- Multi-tenancy + RBAC — in progress
+- Entra ID OIDC SSO for the portal (identity → role mapping) — done
+- Multi-tenancy + RBAC (tenant isolation; admin/reviewer/viewer) — done
 
 ---
 
-> **Where we are:** the conversion loop is complete and runs end-to-end against live Azure DevOps
-> projects — audit → convert → review → approve → PR → sandbox-validate → parity → a signed
-> attestation and an org audit pack — deployable via Docker Compose or Helm, authenticating to
-> GitHub with a least-privilege App. Current focus is the last of **M6**: portal SSO (Entra ID)
-> and multi-tenancy + RBAC.
+> **Where we are:** the core platform (M2–M6) is complete and runs end-to-end against live Azure
+> DevOps projects — audit → convert → review → approve → PR → sandbox-validate → parity → a signed
+> attestation and an org audit pack — deployable via Docker Compose or Helm, with Entra ID SSO,
+> per-tenant isolation + RBAC, and least-privilege GitHub App auth. Auth and multi-tenancy are
+> opt-in, so the air-gapped single-box path is unchanged. Remaining work is the **M0/M1**
+> foundations tail (devcontainer, licence/CONTRIBUTING, fixture harness, forecast wrap, version
+> pinning, Entra-side ADO auth).

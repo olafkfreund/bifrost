@@ -68,14 +68,16 @@ rendered on the [docs site](https://bitfrost.freundcloud.com/).
 | **M3** Review Portal | Three-pane diff, approve/edit, proposal lifecycle | Done |
 | **M4** Commit + PR | Push/migrate, manual-task checklists, PR automation | Done |
 | **M5** Validation | Sandbox trigger + run capture + parity diff | Done |
-| **M6** Compliance + Deploy | Attestation, audit pack, App auth, packaging done; SSO + multi-tenancy underway | In progress |
+| **M6** Compliance + Deploy | Attestation, audit pack, App auth, packaging, Entra SSO, multi-tenancy + RBAC | Done |
 
 The end-to-end loop works against live Azure DevOps projects: audit a portfolio, convert a
 pipeline (real Importer dry-run + grounded LLM gap-fill, air-gap capable), review and approve in
 the portal, open a PR, trigger the converted workflow in a sandbox, capture its run, and diff it
 against the ADO baseline for smoke parity — then export a **signed, in-toto-inspired attestation**
-and a per-org **audit pack**. Deployable via [Docker Compose or Helm](deploy/), authenticating to
-GitHub with a least-privilege **GitHub App**.
+and a per-org **audit pack**. Deployable via [Docker Compose or Helm](deploy/), with **Entra ID
+SSO**, **per-tenant isolation + RBAC**, and a least-privilege **GitHub App** — all opt-in, so the
+air-gapped single-box path stays simple. The core platform (M2–M6) is complete; the M0/M1
+foundations tail remains.
 
 ## Getting started (contributors)
 

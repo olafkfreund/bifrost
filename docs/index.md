@@ -79,13 +79,15 @@ projects, and validation, attestation, and deployment are in place — **M2–M5
 | **M3** Review Portal — three-pane diff, approve/edit, lifecycle | Done |
 | **M4** Commit + PR — push/migrate, runbooks, PR automation | Done |
 | **M5** Validation — sandbox trigger, run capture, parity diff | Done |
-| **M6** Compliance + Deploy — attestation, audit pack, App auth, packaging done; SSO + multi-tenancy underway | In progress |
+| **M6** Compliance + Deploy — attestation, audit pack, App auth, packaging, SSO, multi-tenancy + RBAC | Done |
 
 Today you can audit a portfolio, convert a pipeline (real Importer dry-run + grounded LLM
 gap-fill, air-gap capable), review and approve it in the portal, open a PR, trigger the converted
 workflow in a sandbox, diff its run against the ADO baseline, and export a **signed attestation**
-and a per-org **audit pack** — all deployable via Docker Compose or Helm, authenticating to GitHub
-with a least-privilege App.
+and a per-org **audit pack** — all deployable via Docker Compose or Helm, with **Entra ID SSO**,
+**per-tenant isolation + RBAC**, and a least-privilege **GitHub App**. Auth and multi-tenancy are
+opt-in, so the air-gapped single-box path stays simple. The core platform (M2–M6) is complete;
+remaining work is the M0/M1 foundations tail.
 
 [See the full roadmap](roadmap){: .btn .btn-outline }
 
