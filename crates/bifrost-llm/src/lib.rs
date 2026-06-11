@@ -37,13 +37,34 @@ pub struct GapFillRequest {
     pub repo_context: String,
 }
 
+/// Accept `proposed_yaml` as a string, or coerce a non-string (some local models
+/// emit the YAML as a nested JSON object) into a string — JSON is valid YAML, so
+/// the result is still a reviewable fragment. Richer coercion / prompt-eval is #103.
+fn string_or_stringify<'de, D>(d: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(match v {
+        serde_json::Value::String(s) => s,
+        other => serde_json::to_string_pretty(&other).unwrap_or_default(),
+    })
+}
+
 /// The model's structured answer. Note: **no risk score** — scoring is deterministic.
+///
+/// Field names are snake_case to match the `gap-fill.v1` prompt's JSON spec
+/// (which is what real models follow). camelCase aliases are accepted too, so a
+/// model that returns either casing parses — local models in particular are
+/// inconsistent here.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct GapFillResponse {
+    #[serde(alias = "proposedYaml", deserialize_with = "string_or_stringify")]
     pub proposed_yaml: String,
     pub rationale: String,
+    #[serde(alias = "riskFlags")]
     pub risk_flags: Vec<String>,
+    #[serde(alias = "verifySteps")]
     pub verify_steps: Vec<String>,
     /// Model's certainty in `proposed_yaml` (0.0–1.0) — NOT a migration risk score.
     pub confidence: f64,
@@ -336,10 +357,25 @@ mod tests {
         let r = MockLlmProvider.fill_gap(&req()).await.unwrap();
         assert!(r.proposed_yaml.contains("DownloadSecureFile@1"));
         assert!(!r.risk_flags.is_empty());
-        // Round-trips as JSON (the wire contract) and has no `score`/`riskScore` field.
+        // Serializes with the prompt's snake_case keys and carries no risk score.
         let json = serde_json::to_string(&r).unwrap();
         assert!(!json.contains("score"), "response carries no risk score");
-        assert!(json.contains("proposedYaml"));
+        assert!(json.contains("proposed_yaml"));
+
+        // Parsing tolerates either casing real models emit (snake_case primary,
+        // camelCase via alias) — see GapFillResponse.
+        let snake = r#"{"proposed_yaml":"x","rationale":"r","risk_flags":[],"verify_steps":[],"confidence":0.5}"#;
+        let camel = r#"{"proposedYaml":"x","rationale":"r","riskFlags":[],"verifySteps":[],"confidence":0.5}"#;
+        assert_eq!(
+            parse_gap_fill(snake).unwrap(),
+            parse_gap_fill(camel).unwrap()
+        );
+
+        // A model that returns proposed_yaml as an object is coerced to a string
+        // (JSON is valid YAML) rather than failing the whole conversion.
+        let obj = r#"{"proposed_yaml":{"strategy":{"matrix":{}}},"rationale":"r","risk_flags":[],"verify_steps":[],"confidence":0.5}"#;
+        let parsed = parse_gap_fill(obj).expect("object proposed_yaml is coerced");
+        assert!(parsed.proposed_yaml.contains("strategy"));
     }
 
     #[test]
