@@ -1,3 +1,6 @@
+# Pinned so local, the Nix dev shell, the devcontainer, and CI all format and
+# lint identically (no rustfmt/clippy version skew). Bump deliberately, in lockstep
+# with the version in .github/workflows/ci.yml.
 [toolchain]
-channel = "stable"
+channel = "1.95.0"
 components = ["rustfmt", "clippy"]

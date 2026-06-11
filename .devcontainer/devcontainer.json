@@ -1,0 +1,31 @@
+{
+  "name": "Bifrost",
+  "image": "mcr.microsoft.com/devcontainers/base:bookworm",
+  "features": {
+    // Rust toolchain — the exact version is taken from rust-toolchain.toml.
+    "ghcr.io/devcontainers/features/rust:1": {
+      "version": "none",
+      "profile": "default"
+    },
+    // Node 22 for the portal (Vite/TS/Tailwind).
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "22"
+    },
+    // Docker-in-Docker so the gh actions-importer image can be run.
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    // gh CLI (+ the actions-importer extension is installed in postCreate).
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "dbaeumer.vscode-eslint",
+        "bradlc.vscode-tailwindcss"
+      ]
+    }
+  },
+  "remoteUser": "vscode"
+}
