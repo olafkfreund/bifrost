@@ -39,6 +39,43 @@ pub enum ConversionError {
     Llm(#[from] LlmError),
 }
 
+fn indent_of(line: &str) -> usize {
+    line.len() - line.trim_start().len()
+}
+
+/// Extract the source snippet for `construct` from the ADO definition: the line
+/// naming the construct plus its indented block (e.g. the whole `- task: …`
+/// step or the `matrix:` mapping). Falls back to the construct id when the
+/// source is unavailable or the construct isn't found, so grounding never
+/// degrades below today's behaviour.
+fn source_snippet_for(source_yaml: &str, construct: &str) -> String {
+    if source_yaml.trim().is_empty() {
+        return construct.to_string();
+    }
+    let lines: Vec<&str> = source_yaml.lines().collect();
+    // Match the full construct, else its last dotted segment
+    // (e.g. `strategy.matrix` → `matrix`).
+    let token = construct.rsplit('.').next().unwrap_or(construct);
+    let Some(start) = lines
+        .iter()
+        .position(|l| l.contains(construct) || l.contains(token))
+    else {
+        return construct.to_string();
+    };
+
+    let base = indent_of(lines[start]);
+    let mut end = start + 1;
+    while end < lines.len() {
+        let line = lines[end];
+        if line.trim().is_empty() || indent_of(line) > base {
+            end += 1;
+        } else {
+            break;
+        }
+    }
+    lines[start..end].join("\n").trim_end().to_string()
+}
+
 /// Convert a single pipeline into a [`Proposal`] (+ [`Runbook`]).
 ///
 /// Steps: dry-run → split gaps (`gap_is_manual`) → gap-fill the non-manual gaps
@@ -69,9 +106,9 @@ pub async fn convert_pipeline(
         let provider = router.route(task_class_for(gap))?;
         let request = GapFillRequest {
             gap: gap.clone(),
-            // The construct id is the best grounding available without the ADO
-            // source; richer snippets arrive when wired to the SourceAdapter.
-            source_snippet: gap.construct.clone(),
+            // Ground the model in the actual ADO source for this construct (its
+            // line + indented block), not just the construct id.
+            source_snippet: source_snippet_for(&dry.source_yaml, &gap.construct),
             converted_yaml: dry.converted_yaml.clone(),
             importer_message: gap.detail.clone(),
             repo_context: repo_context.to_string(),
@@ -206,5 +243,31 @@ mod tests {
         .await
         .expect("air-gap conversion succeeds with a local provider");
         assert_eq!(outcome.proposal.status, ProposalStatus::Draft);
+    }
+
+    const SOURCE: &str = "trigger:\n  branches:\n    include:\n      - main\n\nstrategy:\n  matrix:\n    linux:\n      imageName: ubuntu-latest\n    windows:\n      imageName: windows-latest\n\nsteps:\n  - task: DownloadSecureFile@1\n    name: signingCert\n    inputs:\n      secureFile: code-signing.pfx\n\n  - script: dotnet build\n    displayName: Build\n";
+
+    #[test]
+    fn snippet_extracts_the_task_block_with_its_inputs() {
+        let s = source_snippet_for(SOURCE, "DownloadSecureFile@1");
+        assert!(s.contains("- task: DownloadSecureFile@1"));
+        assert!(s.contains("name: signingCert"));
+        assert!(s.contains("secureFile: code-signing.pfx"));
+        // Stops at the next sibling step (the `- script:` block is excluded).
+        assert!(!s.contains("dotnet build"));
+    }
+
+    #[test]
+    fn snippet_matches_a_dotted_construct_by_last_segment() {
+        let s = source_snippet_for(SOURCE, "strategy.matrix");
+        assert!(s.contains("matrix:"));
+        assert!(s.contains("imageName: ubuntu-latest"));
+        assert!(s.contains("windows:"));
+    }
+
+    #[test]
+    fn snippet_falls_back_to_the_construct_when_unavailable() {
+        assert_eq!(source_snippet_for("", "Foo@1"), "Foo@1");
+        assert_eq!(source_snippet_for(SOURCE, "NotPresent@9"), "NotPresent@9");
     }
 }
