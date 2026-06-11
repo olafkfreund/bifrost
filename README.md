@@ -100,8 +100,9 @@ gh actions-importer configure   # uses GITHUB_TOKEN + AZDO_PAT
 ```
 
 Tokens (ADO PAT, GitHub token) live in a gitignored `.envrc` — `source .envrc`.
-Work is issue-driven and milestone-ordered; see [`CLAUDE.md`](CLAUDE.md) for the
-full contributor workflow and hard rules.
+Work is issue-driven and milestone-ordered; see [`CONTRIBUTING.md`](CONTRIBUTING.md)
+for the workflow (Conventional Commits, one PR per issue) and [`CLAUDE.md`](CLAUDE.md)
+for the architecture and hard rules.
 
 ## Stack (target)
 
