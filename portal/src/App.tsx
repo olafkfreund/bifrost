@@ -7,6 +7,7 @@ import { Heatmap } from './components/Heatmap'
 import { PipelineTable } from './components/PipelineTable'
 import { PipelineDrawer } from './components/PipelineDrawer'
 import { ProposalPanel } from './components/ProposalPanel'
+import { DocsPage } from './components/DocsPage'
 import { riskMeta } from './lib/format'
 import { useTheme } from './lib/theme'
 
@@ -14,6 +15,7 @@ const api = createApi()
 
 type View = 'heatmap' | 'table'
 type Filter = RiskBand | 'all'
+type Page = 'portfolio' | 'docs'
 
 export default function App() {
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null)
@@ -22,6 +24,7 @@ export default function App() {
   const [proposalFor, setProposalFor] = useState<Pipeline | null>(null)
   const [view, setView] = useState<View>('heatmap')
   const [filter, setFilter] = useState<Filter>('all')
+  const [page, setPage] = useState<Page>('portfolio')
   const [theme, toggleTheme] = useTheme()
 
   useEffect(() => {
@@ -33,79 +36,81 @@ export default function App() {
     return filter === 'all' ? portfolio.pipelines : portfolio.pipelines.filter((p) => p.riskBand === filter)
   }, [portfolio, filter])
 
-  if (error) {
-    return (
-      <div className="flex h-full items-center justify-center text-[var(--color-risk-red)]">
-        Failed to load portfolio: {error}
-      </div>
-    )
-  }
-
-  if (!portfolio) {
-    return (
-      <div className="flex h-full items-center justify-center text-ink-300">
-        <div className="animate-pulse">Loading portfolio…</div>
-      </div>
-    )
-  }
-
   return (
     <div className="flex min-h-full flex-col">
-      <Header summary={portfolio.summary} theme={theme} onToggleTheme={toggleTheme} />
+      <Header
+        summary={portfolio?.summary ?? null}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+        page={page}
+        onNavigate={setPage}
+      />
 
-      <main className="mx-auto w-full max-w-7xl flex-1 px-6 py-6">
-        <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <h1 className="text-xl font-semibold text-ink-100">Portfolio</h1>
-            <p className="text-sm text-ink-300">
-              Migration risk across {portfolio.summary.totals.pipelines} pipelines · generated{' '}
-              {new Date(portfolio.summary.generatedAt).toLocaleDateString()}
-            </p>
-          </div>
-
-          <div className="flex items-center gap-2">
-            {/* risk filter */}
-            <div className="flex overflow-hidden rounded-lg border border-ink-800 text-xs">
-              {(['all', 'green', 'amber', 'red'] as Filter[]).map((b) => (
-                <button
-                  key={b}
-                  onClick={() => setFilter(b)}
-                  className={`px-3 py-1.5 capitalize transition ${
-                    filter === b ? 'bg-ink-800 text-ink-100' : 'text-ink-300 hover:bg-ink-850'
-                  } ${b !== 'all' ? riskMeta[b as RiskBand].text : ''}`}
-                >
-                  {b}
-                </button>
-              ))}
+      {page === 'docs' ? (
+        <DocsPage />
+      ) : error ? (
+        <div className="flex flex-1 items-center justify-center text-[var(--color-risk-red)]">
+          Failed to load portfolio: {error}
+        </div>
+      ) : !portfolio ? (
+        <div className="flex flex-1 items-center justify-center text-ink-300">
+          <div className="animate-pulse">Loading portfolio…</div>
+        </div>
+      ) : (
+        <main className="mx-auto w-full max-w-7xl flex-1 px-6 py-6">
+          <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <h1 className="text-xl font-semibold text-ink-100">Portfolio</h1>
+              <p className="text-sm text-ink-300">
+                Migration risk across {portfolio.summary.totals.pipelines} pipelines · generated{' '}
+                {new Date(portfolio.summary.generatedAt).toLocaleDateString()}
+              </p>
             </div>
 
-            {/* view toggle */}
-            <div className="flex overflow-hidden rounded-lg border border-ink-800 text-xs">
-              {(['heatmap', 'table'] as View[]).map((v) => (
-                <button
-                  key={v}
-                  onClick={() => setView(v)}
-                  className={`px-3 py-1.5 capitalize transition ${
-                    view === v ? 'bg-ink-800 text-ink-100' : 'text-ink-300 hover:bg-ink-850'
-                  }`}
-                >
-                  {v}
-                </button>
-              ))}
+            <div className="flex items-center gap-2">
+              {/* risk filter */}
+              <div className="flex overflow-hidden rounded-lg border border-ink-800 text-xs">
+                {(['all', 'green', 'amber', 'red'] as Filter[]).map((b) => (
+                  <button
+                    key={b}
+                    onClick={() => setFilter(b)}
+                    className={`px-3 py-1.5 capitalize transition ${
+                      filter === b ? 'bg-ink-800 text-ink-100' : 'text-ink-300 hover:bg-ink-850'
+                    } ${b !== 'all' ? riskMeta[b as RiskBand].text : ''}`}
+                  >
+                    {b}
+                  </button>
+                ))}
+              </div>
+
+              {/* view toggle */}
+              <div className="flex overflow-hidden rounded-lg border border-ink-800 text-xs">
+                {(['heatmap', 'table'] as View[]).map((v) => (
+                  <button
+                    key={v}
+                    onClick={() => setView(v)}
+                    className={`px-3 py-1.5 capitalize transition ${
+                      view === v ? 'bg-ink-800 text-ink-100' : 'text-ink-300 hover:bg-ink-850'
+                    }`}
+                  >
+                    {v}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
-        </div>
 
-        <StatCards summary={portfolio.summary} />
+          <StatCards summary={portfolio.summary} />
 
-        <div className="mt-6">
-          {view === 'heatmap' ? (
-            <Heatmap pipelines={filtered} onSelect={setSelected} />
-          ) : (
-            <PipelineTable pipelines={filtered} onSelect={setSelected} />
-          )}
-        </div>
-      </main>
+          <div className="mt-6">
+            {view === 'heatmap' ? (
+              <Heatmap pipelines={filtered} onSelect={setSelected} />
+            ) : (
+              <PipelineTable pipelines={filtered} onSelect={setSelected} />
+            )}
+          </div>
+        </main>
+      )}
 
       <footer className="border-t border-ink-800 px-6 py-3 text-center text-xs text-ink-500">
         Risk is computed deterministically from the Importer audit + source inventory. Bifrost

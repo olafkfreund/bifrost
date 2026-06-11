@@ -7,10 +7,14 @@ export function Header({
   summary,
   theme,
   onToggleTheme,
+  page,
+  onNavigate,
 }: {
-  summary: PortfolioSummary
+  summary: PortfolioSummary | null
   theme: Theme
   onToggleTheme: () => void
+  page: 'portfolio' | 'docs'
+  onNavigate: (page: 'portfolio' | 'docs') => void
 }) {
   return (
     <header className="border-b border-ink-800 bg-ink-900/60 backdrop-blur">
@@ -23,15 +27,32 @@ export function Header({
           </div>
         </div>
 
-        <div className="mx-2 h-8 w-px bg-ink-800" />
+        {summary && (
+          <>
+            <div className="mx-2 h-8 w-px bg-ink-800" />
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-ink-300">org</span>
+              <span className="rounded-md bg-ink-800 px-2 py-1 font-mono text-ink-100">{summary.org}</span>
+            </div>
+          </>
+        )}
 
-        <div className="flex items-center gap-2 text-sm">
-          <span className="text-ink-300">org</span>
-          <span className="rounded-md bg-ink-800 px-2 py-1 font-mono text-ink-100">{summary.org}</span>
-        </div>
+        <nav className="ml-4 hidden items-center gap-1 text-sm sm:flex">
+          {(['portfolio', 'docs'] as const).map((p) => (
+            <button
+              key={p}
+              onClick={() => onNavigate(p)}
+              className={`rounded-md px-3 py-1.5 capitalize transition ${
+                page === p ? 'bg-ink-800 text-ink-100' : 'text-ink-300 hover:bg-ink-850 hover:text-ink-100'
+              }`}
+            >
+              {p === 'docs' ? 'Docs & Help' : p}
+            </button>
+          ))}
+        </nav>
 
         <div className="ml-auto flex items-center gap-3 text-xs">
-          {summary.airGap && (
+          {summary?.airGap && (
             <span
               title="No pipeline data leaves the network — local model only"
               className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-medium"
@@ -45,12 +66,14 @@ export function Header({
               Air-gap mode
             </span>
           )}
-          <span
-            title="Pinned tool versions for this audit run — recorded for attestation"
-            className="hidden items-center gap-2 rounded-full border border-ink-700 bg-ink-850 px-2.5 py-1 font-mono text-ink-300 sm:inline-flex"
-          >
-            importer {summary.importerVersion}
-          </span>
+          {summary && (
+            <span
+              title="Pinned tool versions for this audit run — recorded for attestation"
+              className="hidden items-center gap-2 rounded-full border border-ink-700 bg-ink-850 px-2.5 py-1 font-mono text-ink-300 sm:inline-flex"
+            >
+              importer {summary.importerVersion}
+            </span>
+          )}
           <ThemeToggle theme={theme} onToggle={onToggleTheme} />
         </div>
       </div>
