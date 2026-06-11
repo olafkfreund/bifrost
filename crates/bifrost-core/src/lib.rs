@@ -11,6 +11,7 @@ pub mod assemble;
 pub mod attest;
 pub mod audit;
 pub mod audit_log;
+pub mod connection;
 pub mod conversion;
 pub mod gap;
 pub mod identity;
@@ -28,6 +29,7 @@ pub use attest::{
 };
 pub use audit::{AuditCounts, AuditSummary, ManualTask, ManualTaskKind, UnsupportedStep};
 pub use audit_log::{AuditEvent, AuditLog};
+pub use connection::{Connection, ConnectionKind, SecretRef};
 pub use conversion::{build_pipeline, pipeline_from_dry_run, signals_from_dry_run, PipelineMeta};
 pub use gap::{DryRunResult, Gap, GapKind};
 pub use identity::{Identity, Role};
