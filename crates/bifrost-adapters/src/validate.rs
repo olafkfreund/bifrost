@@ -81,6 +81,12 @@ impl GitHubSandboxTrigger {
         }
     }
 
+    /// Override the API base (e.g. a GitHub Enterprise URL).
+    pub fn with_api_base(mut self, api_base: impl Into<String>) -> Self {
+        self.api_base = api_base.into();
+        self
+    }
+
     /// Build from `GITHUB_TOKEN` (required) and optional `GITHUB_API_BASE`.
     pub fn from_env() -> Result<Self, ValidateError> {
         let token = std::env::var("GITHUB_TOKEN")
@@ -257,6 +263,12 @@ impl GitHubRunCollector {
             api_base: "https://api.github.com".to_string(),
             client: reqwest::Client::new(),
         }
+    }
+
+    /// Override the API base (e.g. a GitHub Enterprise URL).
+    pub fn with_api_base(mut self, api_base: impl Into<String>) -> Self {
+        self.api_base = api_base.into();
+        self
     }
 
     /// Build from `GITHUB_TOKEN` (required) and optional `GITHUB_API_BASE`.
