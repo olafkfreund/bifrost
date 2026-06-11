@@ -43,6 +43,61 @@ fn indent_of(line: &str) -> usize {
     line.len() - line.trim_start().len()
 }
 
+/// Detect languages + build tools from the pipeline YAML (source + the Importer's
+/// converted output) to populate the grounded request's `repo_context` (plan
+/// §5.3). A pragmatic v1 — the pipeline is the signal we have without cloning the
+/// repo; a clone-based detector can layer on later. Returns `languages: unknown`
+/// when nothing matches, preserving prior behaviour.
+fn labels_matching<'a>(table: &[(&'a str, &'a [&'a str])], hay: &str) -> Vec<&'a str> {
+    table
+        .iter()
+        .filter(|(_, needles)| needles.iter().any(|n| hay.contains(*n)))
+        .map(|(label, _)| *label)
+        .collect()
+}
+
+fn detect_repo_context(source_yaml: &str, converted_yaml: &str) -> String {
+    let hay = format!("{source_yaml}\n{converted_yaml}").to_ascii_lowercase();
+
+    let languages: &[(&str, &[&str])] = &[
+        ("C#/.NET", &["dotnet", ".csproj", "nuget", "msbuild"]),
+        ("Java", &["gradle", "mvn ", "maven", "pom.xml", "gradlew"]),
+        (
+            "JavaScript/TypeScript",
+            &["npm ", "node ", "yarn", "package.json", "tsc"],
+        ),
+        (
+            "Python",
+            &["python", "pip ", "pytest", "requirements.txt", "poetry"],
+        ),
+        ("Go", &["go build", "go test", "go.mod", "golang"]),
+        ("Rust", &["cargo ", "rustup"]),
+    ];
+    let build_tools: &[(&str, &[&str])] = &[
+        ("dotnet", &["dotnet"]),
+        ("gradle", &["gradle", "gradlew"]),
+        ("maven", &["mvn ", "maven", "pom.xml"]),
+        ("npm", &["npm ", "package.json"]),
+        ("docker", &["docker build", "dockerfile", "docker-compose"]),
+        ("terraform", &["terraform"]),
+    ];
+
+    let langs = labels_matching(languages, &hay);
+    let tools = labels_matching(build_tools, &hay);
+    let mut parts = Vec::new();
+    if !langs.is_empty() {
+        parts.push(format!("languages: {}", langs.join(", ")));
+    }
+    if !tools.is_empty() {
+        parts.push(format!("build tools: {}", tools.join(", ")));
+    }
+    if parts.is_empty() {
+        "languages: unknown".to_string()
+    } else {
+        parts.join("; ")
+    }
+}
+
 /// Extract the source snippet for `construct` from the ADO definition: the line
 /// naming the construct plus its indented block (e.g. the whole `- task: …`
 /// step or the `matrix:` mapping). Falls back to the construct id when the
@@ -95,6 +150,15 @@ pub async fn convert_pipeline(
     // Human work → the runbook.
     let runbook = Runbook::from_gaps(&dry.gaps);
 
+    // Detect languages/build tools from the pipeline itself and combine with any
+    // caller-supplied context (e.g. a future repo-clone-based detector).
+    let detected = detect_repo_context(&dry.source_yaml, &dry.converted_yaml);
+    let context = if repo_context.trim().is_empty() {
+        detected
+    } else {
+        format!("{}; {}", repo_context.trim(), detected)
+    };
+
     // Model work → grounded gap-fill via the router, one request per gap.
     let mut fills: Vec<GapFill> = Vec::new();
     let mut rationales: Vec<String> = Vec::new();
@@ -111,7 +175,7 @@ pub async fn convert_pipeline(
             source_snippet: source_snippet_for(&dry.source_yaml, &gap.construct),
             converted_yaml: dry.converted_yaml.clone(),
             importer_message: gap.detail.clone(),
-            repo_context: repo_context.to_string(),
+            repo_context: context.clone(),
         };
         let response = provider.fill_gap(&request).await?;
 
@@ -269,5 +333,30 @@ mod tests {
     fn snippet_falls_back_to_the_construct_when_unavailable() {
         assert_eq!(source_snippet_for("", "Foo@1"), "Foo@1");
         assert_eq!(source_snippet_for(SOURCE, "NotPresent@9"), "NotPresent@9");
+    }
+
+    #[test]
+    fn detects_dotnet_from_the_pipeline() {
+        let ctx = detect_repo_context(SOURCE, "");
+        assert!(ctx.contains("C#/.NET"), "got: {ctx}");
+        assert!(ctx.contains("build tools: dotnet"), "got: {ctx}");
+    }
+
+    #[test]
+    fn detects_multiple_languages_and_tools() {
+        let yaml = "steps:\n  - script: ./gradlew build\n  - script: npm ci && npm test\n  - script: docker build .\n";
+        let ctx = detect_repo_context(yaml, "");
+        assert!(ctx.contains("Java"), "got: {ctx}");
+        assert!(ctx.contains("JavaScript/TypeScript"), "got: {ctx}");
+        assert!(ctx.contains("gradle"));
+        assert!(ctx.contains("docker"));
+    }
+
+    #[test]
+    fn unknown_when_nothing_detected() {
+        assert_eq!(
+            detect_repo_context("trigger:\n  - main\n", ""),
+            "languages: unknown"
+        );
     }
 }
