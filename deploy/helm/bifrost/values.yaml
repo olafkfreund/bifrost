@@ -1,0 +1,64 @@
+# Default values for the Bifrost chart. Override per environment.
+
+image:
+  # Tags default to .Chart.AppVersion when left empty.
+  api:
+    repository: ghcr.io/olafkfreund/bifrost-api
+    tag: ""
+  portal:
+    repository: ghcr.io/olafkfreund/bifrost-portal
+    tag: ""
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+api:
+  replicas: 1
+  port: 8080
+  # Air-gap by default: frontier LLM providers disabled, no pipeline data leaves.
+  airGap: true
+  # Datastore. SQLite (single replica + a PVC) by default; set to a
+  # postgres://… URL for the server/multi-tenant mode (then disable persistence).
+  db: "sqlite:/data/bifrost.db"
+  # Extra environment passed verbatim to the API container (e.g. BIFROST_PROJECT).
+  extraEnv: {}
+  persistence:
+    enabled: true
+    size: 1Gi
+    # storageClass: ""
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+portal:
+  replicas: 1
+  # The in-cluster API base the portal's nginx proxies /api to. Empty → the
+  # chart's own "<release>-api:8080" service. Override only to point elsewhere.
+  apiUpstream: ""
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# HMAC signing key for attestation export (#62/#63).
+#  - value: inline key → stored in a chart-managed Secret.
+#  - existingSecret/key: reference a Secret you manage out of band (preferred).
+signingKey:
+  value: ""
+  existingSecret: ""
+  key: "signing-key"
+
+serviceAccount:
+  create: true
+  name: ""
+
+ingress:
+  enabled: false
+  className: ""
+  host: bifrost.example.com
+  path: /
+  pathType: Prefix
+  annotations: {}
+  tls:
+    enabled: false
+    secretName: bifrost-tls

@@ -1,0 +1,35 @@
+{{- $upstream := .Values.portal.apiUpstream | default (printf "http://%s-api:8080" (include "bifrost.fullname" .)) -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "bifrost.fullname" . }}-portal-nginx
+  labels:
+    {{- include "bifrost.labels" . | nindent 4 }}
+    app.kubernetes.io/component: portal
+data:
+  # Overrides the image's baked default.conf so /api proxies to the in-cluster
+  # API service (the image default targets the docker-compose "api" host).
+  default.conf: |
+    server {
+        listen 80;
+        server_name _;
+        root /usr/share/nginx/html;
+        index index.html;
+
+        location /api/ {
+            proxy_pass {{ $upstream }};
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            # Server-Sent Events (job progress): no buffering, keep it open.
+            proxy_set_header Connection '';
+            proxy_buffering off;
+            proxy_cache off;
+            proxy_read_timeout 1h;
+        }
+
+        location / {
+            try_files $uri $uri/ /index.html;
+        }
+    }

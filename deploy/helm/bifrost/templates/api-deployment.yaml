@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "bifrost.fullname" . }}-api
+  labels:
+    {{- include "bifrost.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  replicas: {{ .Values.api.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        {{- include "bifrost.labels" . | nindent 8 }}
+        app.kubernetes.io/component: api
+    spec:
+      serviceAccountName: {{ include "bifrost.serviceAccountName" . }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+        - name: api
+          image: {{ include "bifrost.apiImage" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: BIFROST_API_ADDR
+              value: "0.0.0.0:{{ .Values.api.port }}"
+            - name: BIFROST_DB
+              value: {{ .Values.api.db | quote }}
+            - name: BIFROST_AIR_GAP
+              value: {{ ternary "1" "0" .Values.api.airGap | quote }}
+            {{- if or .Values.signingKey.value .Values.signingKey.existingSecret }}
+            - name: BIFROST_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.signingKey.existingSecret | default (printf "%s-signing" (include "bifrost.fullname" .)) }}
+                  key: {{ .Values.signingKey.key }}
+            {{- end }}
+            {{- range $k, $v := .Values.api.extraEnv }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.api.port }}
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          {{- if and .Values.api.persistence.enabled (ne (include "bifrost.usesPostgres" .) "true") }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          {{- end }}
+          {{- with .Values.api.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- if and .Values.api.persistence.enabled (ne (include "bifrost.usesPostgres" .) "true") }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "bifrost.fullname" . }}-data
+      {{- end }}
+      {{- with .Values.api.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,23 @@
+Bifrost {{ .Chart.AppVersion }} installed as release "{{ .Release.Name }}".
+
+Components:
+  - API    : {{ include "bifrost.fullname" . }}-api    (ClusterIP :8080)
+  - Portal : {{ include "bifrost.fullname" . }}-portal (ClusterIP :80, proxies /api)
+
+Datastore: {{ if eq (include "bifrost.usesPostgres" .) "true" }}Postgres (server mode){{ else }}SQLite on a {{ .Values.api.persistence.size }} PVC{{ end }}
+Air-gap mode: {{ .Values.api.airGap }}
+
+{{- if not (or .Values.signingKey.value .Values.signingKey.existingSecret) }}
+
+WARNING: no attestation signing key set (signingKey.value / signingKey.existingSecret).
+         The API will sign exports with its built-in dev key — set a real key for production.
+{{- end }}
+
+{{ if .Values.ingress.enabled -}}
+Open: http{{ if .Values.ingress.tls.enabled }}s{{ end }}://{{ .Values.ingress.host }}{{ .Values.ingress.path }}
+{{- else -}}
+No ingress. Port-forward the portal to try it locally:
+
+  kubectl port-forward svc/{{ include "bifrost.fullname" . }}-portal 8080:80
+  open http://localhost:8080
+{{- end }}
