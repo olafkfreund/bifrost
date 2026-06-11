@@ -340,6 +340,59 @@ mod tests {
         assert!(g.variables.iter().any(|v| !v.is_secret));
     }
 
+    /// Secret-handling guard (#107): even when the ADO API response carries secret
+    /// VALUES and service-connection credentials, the parsers must keep only
+    /// names/types/flags — the value must never survive into the domain model
+    /// (and therefore never reach persistence, the audit log, or an LLM request).
+    #[test]
+    fn parsers_never_retain_secret_values_or_credentials() {
+        // A variable group whose secret variable also carries a value (as a real
+        // ADO response can), plus a non-secret value.
+        let vg = serde_json::json!({
+            "value": [{
+                "id": 1, "name": "shared",
+                "variables": {
+                    "API_URL": { "value": "https://example.com", "isSecret": false },
+                    "TOKEN":   { "value": "SUPER-SECRET-VALUE", "isSecret": true }
+                }
+            }]
+        });
+        // A service connection with credentials in its authorization parameters.
+        let sc = serde_json::json!({
+            "value": [{
+                "id": "c1", "name": "prod-arm", "type": "azurerm",
+                "authorization": { "parameters": { "serviceprincipalkey": "CREDENTIAL-XYZ" } }
+            }]
+        });
+
+        let groups = parse_variable_groups(&vg, "proj");
+        let conns = parse_service_connections(&sc, "proj");
+
+        // Names + flags are kept.
+        assert!(groups[0]
+            .variables
+            .iter()
+            .any(|v| v.name == "TOKEN" && v.is_secret));
+        assert_eq!(conns[0].kind, "azurerm");
+
+        // No secret value or credential survives anywhere in the serialized model.
+        let serialized = format!(
+            "{}{}",
+            serde_json::to_string(&groups).unwrap(),
+            serde_json::to_string(&conns).unwrap()
+        );
+        for forbidden in [
+            "SUPER-SECRET-VALUE",
+            "CREDENTIAL-XYZ",
+            "https://example.com",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "secret/credential value leaked into the model: {forbidden}"
+            );
+        }
+    }
+
     /// Live smoke test against a real org. Skipped by default; run with creds via
     /// `AZDO_ORG_URL`/`AZDO_PAT` set and `cargo test -- --ignored`. Targets
     /// `BIFROST_TEST_PROJECT` (default `SARC`) so any seeded project can be checked.
