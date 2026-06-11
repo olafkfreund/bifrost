@@ -17,11 +17,13 @@ mod anthropic;
 mod copilot;
 mod gemini;
 mod ollama;
+mod openai_compatible;
 
 pub use anthropic::AnthropicProvider;
 pub use copilot::CopilotProvider;
 pub use gemini::GeminiProvider;
 pub use ollama::OllamaProvider;
+pub use openai_compatible::OpenAiCompatibleProvider;
 
 use async_trait::async_trait;
 use bifrost_core::Gap;
