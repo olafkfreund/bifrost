@@ -25,6 +25,7 @@ export default function App() {
   const [proposalFor, setProposalFor] = useState<Pipeline | null>(null)
   const [view, setView] = useState<View>('heatmap')
   const [filter, setFilter] = useState<Filter>('all')
+  const [orgFilter, setOrgFilter] = useState<string>('all')
   const [page, setPage] = useState<Page>('portfolio')
   const [theme, toggleTheme] = useTheme()
 
@@ -32,10 +33,18 @@ export default function App() {
     api.getPortfolio().then(setPortfolio).catch((e) => setError(String(e)))
   }, [])
 
+  // Distinct source orgs (multi-org, #157). Empty/absent orgs are single-org.
+  const orgs = useMemo(() => {
+    if (!portfolio) return []
+    return [...new Set(portfolio.pipelines.map((p) => p.org).filter((o): o is string => !!o))].sort()
+  }, [portfolio])
+
   const filtered = useMemo(() => {
     if (!portfolio) return []
-    return filter === 'all' ? portfolio.pipelines : portfolio.pipelines.filter((p) => p.riskBand === filter)
-  }, [portfolio, filter])
+    return portfolio.pipelines
+      .filter((p) => filter === 'all' || p.riskBand === filter)
+      .filter((p) => orgFilter === 'all' || p.org === orgFilter)
+  }, [portfolio, filter, orgFilter])
 
   return (
     <div className="flex min-h-full flex-col">
@@ -76,6 +85,23 @@ export default function App() {
             </div>
 
             <div className="flex items-center gap-2">
+              {/* org switcher — only when the tenant spans multiple orgs (#157) */}
+              {orgs.length > 1 && (
+                <select
+                  value={orgFilter}
+                  onChange={(e) => setOrgFilter(e.target.value)}
+                  className="rounded-lg border border-ink-800 bg-ink-900 px-3 py-1.5 text-xs text-ink-100"
+                  title="Filter by source org"
+                >
+                  <option value="all">All orgs ({orgs.length})</option>
+                  {orgs.map((o) => (
+                    <option key={o} value={o}>
+                      {o}
+                    </option>
+                  ))}
+                </select>
+              )}
+
               {/* risk filter */}
               <div className="flex overflow-hidden rounded-lg border border-ink-800 text-xs">
                 {(['all', 'green', 'amber', 'red'] as Filter[]).map((b) => (

@@ -1,15 +1,18 @@
 import type { Pipeline } from '../types'
 import { riskMeta } from '../lib/format'
 
-function groupByProject(pipelines: Pipeline[]): [string, Pipeline[]][] {
+function groupBy(pipelines: Pipeline[], key: (p: Pipeline) => string): [string, Pipeline[]][] {
   const map = new Map<string, Pipeline[]>()
   for (const p of pipelines) {
-    const arr = map.get(p.project) ?? []
+    const k = key(p)
+    const arr = map.get(k) ?? []
     arr.push(p)
-    map.set(p.project, arr)
+    map.set(k, arr)
   }
   return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]))
 }
+
+const groupByProject = (pipelines: Pipeline[]) => groupBy(pipelines, (p) => p.project)
 
 function Tile({ p, onSelect }: { p: Pipeline; onSelect: (p: Pipeline) => void }) {
   const m = riskMeta[p.riskBand]
@@ -32,17 +35,16 @@ function Tile({ p, onSelect }: { p: Pipeline; onSelect: (p: Pipeline) => void })
   )
 }
 
-export function Heatmap({
+function ProjectGroups({
   pipelines,
   onSelect,
 }: {
   pipelines: Pipeline[]
   onSelect: (p: Pipeline) => void
 }) {
-  const groups = groupByProject(pipelines)
   return (
     <div className="space-y-5">
-      {groups.map(([project, items]) => (
+      {groupByProject(pipelines).map(([project, items]) => (
         <div key={project}>
           <div className="mb-2 flex items-center gap-2">
             <h3 className="text-sm font-semibold text-ink-100">{project}</h3>
@@ -54,6 +56,39 @@ export function Heatmap({
             ))}
           </div>
         </div>
+      ))}
+    </div>
+  )
+}
+
+export function Heatmap({
+  pipelines,
+  onSelect,
+}: {
+  pipelines: Pipeline[]
+  onSelect: (p: Pipeline) => void
+}) {
+  // Multi-org (#157): when the view spans more than one source org, group by
+  // org → project; otherwise keep the flat by-project view.
+  const orgs = groupBy(pipelines, (p) => p.org ?? '')
+  const multiOrg = orgs.filter(([o]) => o !== '').length > 1
+  if (!multiOrg) {
+    return <ProjectGroups pipelines={pipelines} onSelect={onSelect} />
+  }
+  return (
+    <div className="space-y-8">
+      {orgs.map(([org, items]) => (
+        <section key={org || '—'}>
+          <div className="mb-3 flex items-center gap-2 border-b border-ink-800 pb-1.5">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-200">
+              {org || 'Unassigned org'}
+            </h2>
+            <span className="rounded bg-ink-850 px-1.5 text-[10px] font-medium text-ink-300">
+              {items.length} pipelines
+            </span>
+          </div>
+          <ProjectGroups pipelines={items} onSelect={onSelect} />
+        </section>
       ))}
     </div>
   )
