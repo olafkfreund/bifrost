@@ -44,6 +44,10 @@ export interface Pipeline {
   /** Forecast Actions runner-minutes/month for this pipeline. */
   forecastMinutes: number
   factors: RiskFactor[]
+  /** Who last acted on the proposal (latest audit event), if any. */
+  reviewer?: string
+  /** When the proposal was last acted on (ISO-8601), if any. */
+  reviewedAt?: string
 }
 
 export interface PortfolioSummary {

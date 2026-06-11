@@ -63,7 +63,21 @@ async fn health() -> Json<Value> {
 }
 
 async fn portfolio(State(state): State<Shared>) -> Json<Portfolio> {
-    Json(state.portfolio.read().await.clone())
+    let mut portfolio = state.portfolio.read().await.clone();
+    // Overlay live review state so the portal's review queue reflects actions
+    // taken this session: a converted pipeline shows its current proposal status,
+    // and the latest audit event names who last acted and when.
+    let store = state.proposals.read().await;
+    for p in &mut portfolio.pipelines {
+        if let Some(rec) = store.get(&proposal_id_for(&p.id)) {
+            p.status = rec.proposal.status;
+            if let Some(last) = rec.audit.events().last() {
+                p.reviewer = Some(last.actor.clone());
+                p.reviewed_at = Some(last.at.clone());
+            }
+        }
+    }
+    Json(portfolio)
 }
 
 /// Re-resolve the portfolio (e.g. re-run the live audit) and update the cache.
@@ -423,5 +437,36 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err.0, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn portfolio_overlays_live_review_state_from_the_store() {
+        let state = test_state();
+        let body = convert(State(state.clone()), Path("web-portal-ci".into()))
+            .await
+            .unwrap()
+            .0;
+        let pid = body["proposal"]["id"].as_str().unwrap().to_string();
+        let _ = transition(
+            State(state.clone()),
+            Path(pid),
+            Json(TransitionBody {
+                to: ProposalStatus::InReview,
+                actor: Some("olaf".into()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        // The served portfolio reflects the live proposal status + last actor.
+        let pf = portfolio(State(state.clone())).await.0;
+        let p = pf
+            .pipelines
+            .iter()
+            .find(|p| p.id == "web-portal-ci")
+            .expect("sample pipeline present");
+        assert_eq!(p.status, ProposalStatus::InReview);
+        assert_eq!(p.reviewer.as_deref(), Some("olaf"));
+        assert!(p.reviewed_at.is_some());
     }
 }

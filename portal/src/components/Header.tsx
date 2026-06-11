@@ -13,8 +13,8 @@ export function Header({
   summary: PortfolioSummary | null
   theme: Theme
   onToggleTheme: () => void
-  page: 'portfolio' | 'docs'
-  onNavigate: (page: 'portfolio' | 'docs') => void
+  page: 'portfolio' | 'review' | 'docs'
+  onNavigate: (page: 'portfolio' | 'review' | 'docs') => void
 }) {
   return (
     <header className="border-b border-ink-800 bg-ink-900/60 backdrop-blur">
@@ -38,7 +38,7 @@ export function Header({
         )}
 
         <nav className="ml-4 hidden items-center gap-1 text-sm sm:flex">
-          {(['portfolio', 'docs'] as const).map((p) => (
+          {(['portfolio', 'review', 'docs'] as const).map((p) => (
             <button
               key={p}
               onClick={() => onNavigate(p)}

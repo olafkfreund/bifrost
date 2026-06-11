@@ -52,6 +52,8 @@ const raw: Omit<Pipeline, 'riskBand'>[] = [
     manualTasks: 2,
     riskScore: 38,
     status: 'in_review',
+    reviewer: 'olaf@freundcloud.com',
+    reviewedAt: '2026-06-10T14:22:00Z',
     forecastMinutes: 2400,
     factors: [
       f('selfhosted', 'Self-hosted pool', 16, 'Linux self-hosted pool → runner strategy decision'),
@@ -104,6 +106,8 @@ const raw: Omit<Pipeline, 'riskBand'>[] = [
     manualTasks: 3,
     riskScore: 58,
     status: 'changes_requested',
+    reviewer: 'priya@freundcloud.com',
+    reviewedAt: '2026-06-09T09:05:00Z',
     forecastMinutes: 4200,
     factors: [
       f('selfhosted', 'macOS self-hosted', 22, 'macOS pool for iOS build → runner strategy'),
@@ -139,6 +143,8 @@ const raw: Omit<Pipeline, 'riskBand'>[] = [
     manualTasks: 1,
     riskScore: 18,
     status: 'approved',
+    reviewer: 'olaf@freundcloud.com',
+    reviewedAt: '2026-06-11T08:40:00Z',
     forecastMinutes: 1300,
     factors: [
       f('container', 'Container job', 8, 'Container resource → jobs.<id>.container'),
@@ -155,6 +161,8 @@ const raw: Omit<Pipeline, 'riskBand'>[] = [
     manualTasks: 2,
     riskScore: 41,
     status: 'in_review',
+    reviewer: 'sam@freundcloud.com',
+    reviewedAt: '2026-06-11T07:15:00Z',
     forecastMinutes: 760,
     factors: [
       f('service_conn', 'Service connection', 18, 'Databricks connection → OIDC / secret'),
