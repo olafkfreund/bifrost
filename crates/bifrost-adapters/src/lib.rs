@@ -10,6 +10,7 @@ pub mod baseline;
 pub mod convert;
 pub mod docker_importer;
 pub mod github_auth;
+pub mod gitlab;
 pub mod importer;
 pub mod jenkins;
 pub mod orchestrator;
@@ -31,6 +32,7 @@ pub use docker_importer::DockerImporter;
 pub use github_auth::{
     github_token_from_env, AuthError, GitHubAppAuth, GitHubAuth, StaticTokenAuth,
 };
+pub use gitlab::GitLabAdapter;
 pub use importer::{
     parse_audit_summary, parse_dry_run, parse_forecast, Forecast, Importer, ImporterError,
     MockImporter,

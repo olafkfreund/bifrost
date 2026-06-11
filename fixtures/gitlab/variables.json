@@ -1,0 +1,16 @@
+[
+  {
+    "key": "DOCKER_REGISTRY_URL",
+    "variable_type": "env_var",
+    "protected": false,
+    "masked": false,
+    "value": "registry.example.com"
+  },
+  {
+    "key": "AZURE_CLIENT_SECRET",
+    "variable_type": "env_var",
+    "protected": true,
+    "masked": true,
+    "value": "super-secret-value-must-never-be-stored"
+  }
+]
