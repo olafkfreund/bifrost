@@ -18,61 +18,68 @@ at a time, one PR per issue. The backlog is bootstrapped by
 ---
 
 ## M0 — Foundations
-{: .label .label-yellow }Current
+{: .label .label-yellow }In progress
 
 Stand up the monorepo, CI, dev environment, licence, docs site, and test-fixture harness so every
 later epic builds on a stable base.
 
-- Scaffold Cargo workspace (`bifrost-core`, `-adapters`, `-llm`, `-api`, `-cli`)
-- CI: build, fmt, `clippy -D warnings`, test
-- Devcontainer + toolchain pinning (Rust, Docker-in-Docker, Node, `gh`)
-- MIT licence, README, CONTRIBUTING
-- Jekyll docs site (this site)
-- Importer-output fixture harness (`audit_summary.md`, dry-run YAML/logs)
+- Scaffold Cargo workspace (`bifrost-core`, `-adapters`, `-llm`, `-api`, `-cli`) — done
+- CI: build, fmt, `clippy -D warnings`, test — done
+- Jekyll docs site (this site) — done
+- Devcontainer + toolchain pinning (Rust, Docker-in-Docker, Node, `gh`) — planned
+- MIT licence, README, CONTRIBUTING — README done; licence + CONTRIBUTING planned
+- Importer-output fixture harness (`audit_summary.md`, dry-run YAML/logs) — planned
 
 ## M1 — Audit MVP
+{: .label .label-green }Mostly done
 
 ADO discovery + Importer audit wrapper + a portfolio heatmap. **This slice alone demos the whole
-thesis.**
+thesis** — and it runs against live Azure DevOps projects today.
 
-- `SourceAdapter` trait + `AzureDevOpsAdapter` (PAT + Entra auth)
-- Enumerate projects & pipelines; classify classic vs YAML
-- Fetch service connections + variable groups (**names only, never secret values**)
-- Task/extension inventory across the org
-- Importer Docker wrapper + parse `audit_summary.md`
-- Forecast wrapping; pin & record tool versions per job
+- `SourceAdapter` trait + `AzureDevOpsAdapter` — done
+- Enumerate projects & pipelines; classify classic vs YAML — done
+- Fetch service connections + variable groups (**names only, never secret values**) — done
+- Task/extension inventory across the org — done
+- Importer Docker wrapper + parse `audit_summary.md` — done
+- ADO auth (PAT done; Entra ID planned), forecast wrapping, per-job version pinning — planned
 
 ## M2 — Conversion + LLM
+{: .label .label-green }Done
 
 dry-run wrapping, gap detection, the pluggable LLM layer, and the deterministic risk model.
 
-- Gap detector + deterministic risk model (Green/Amber/Red)
-- Proposal model + state machine (`draft → in_review → approved/changes_requested → committed → validated`)
-- `LlmProvider` trait + structured output; grounded gap-fill request builder
-- Anthropic (Claude) + Ollama/llama.cpp providers; Gemini; routing policy + **air-gap mode**
-- axum API + SSE; Postgres + SQLite persistence; job orchestration; append-only audit log
+- Gap detector + deterministic risk model (Green/Amber/Red) — done
+- Proposal model + state machine (`draft → in_review → approved/changes_requested → committed → validated`) — done
+- `LlmProvider` trait + structured output; grounded gap-fill request builder — done
+- Anthropic (Claude), Gemini, Copilot/Models, and Ollama/llama.cpp providers; routing policy + **air-gap mode** — done
+- axum API + SSE; Postgres + SQLite persistence; job orchestration; append-only audit log — done
 
 ## M3 — Review Portal
+{: .label .label-green }Done
 
 The React portal where humans review and approve.
 
-- Vite + TS + Tailwind scaffold; portfolio heatmap
-- Three-pane diff (ADO YAML \| generated Actions YAML \| LLM rationale, Monaco)
-- Approve / request-changes / edit; proposal lifecycle UI; runbook view
+- Vite + TS + Tailwind scaffold; portfolio heatmap — done
+- Three-pane diff (ADO YAML \| generated Actions YAML \| LLM rationale, Monaco) — done
+- Approve / request-changes / edit; proposal lifecycle UI; runbook view; in-portal docs — done
 
 ## M4 — Commit + PR
+{: .label .label-green }Done
 
-- Manual-task checklist generator (secrets, service connections → OIDC, runners, environments)
-- Commit approved workflow / open PR (opt-in, never silent)
-- Manual-task tracker
+- Manual-task checklist generator (secrets, service connections → OIDC, runners, environments) — done
+- Commit approved workflow / open PR (opt-in, never silent) — done
+- Manual-task tracker gating the terminal state — done
 
 ## M5 — Validation
+{: .label .label-yellow }In progress
 
-- Sandbox trigger via `workflow_dispatch`; capture run result + artifacts
-- Parity diff vs ADO baseline (smoke parity, **not** full equivalence)
-- Parity report + attestation surfaced before commit approval
+- Sandbox trigger via `workflow_dispatch` — done
+- Capture run result + artifacts (status, jobs, declared outputs) — done
+- Parity diff vs ADO baseline (smoke parity, **not** full equivalence) — done
+- Parity report + attestation surfaced before commit approval — planned
 
 ## M6 — Compliance + Deploy
+{: .label .label-blue }Planned
 
 - Signed attestation record + export (consider in-toto / provenance format)
 - Compliance audit pack export
@@ -81,5 +88,6 @@ The React portal where humans review and approve.
 
 ---
 
-> **Recommended first cut to demo:** M0 → M1 → the read-only recommendation slice of M2 (LLM
-> explanation + risk score, no auto-commit).
+> **Where we are:** the conversion loop is complete and runs end-to-end against live Azure DevOps
+> projects (audit → convert → review → approve → PR → sandbox-validate). Current focus is
+> finishing **M5 Validation** (parity report + attestation), then **M6 Compliance + Deploy**.

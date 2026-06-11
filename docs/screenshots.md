@@ -64,7 +64,7 @@ last action (who, when) on each row.
 
 ![Review queue — pipelines tracked through the proposal lifecycle with a progress bar]({{ '/assets/screenshots/review-queue.png' | relative_url }})
 
-## Docs &amp; help, in the portal
+## Docs and help, in the portal
 
 Operator documentation ships inside the portal itself — getting started, using the portal, and
 connecting to live data — so it travels with the tool, air-gapped or not.
