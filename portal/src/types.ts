@@ -79,6 +79,35 @@ export interface Portfolio {
   pipelines: Pipeline[]
 }
 
+/** A redacted secret reference (no values — server strips encrypted material). */
+export type SecretRefView =
+  | { type: 'env-var'; name: string }
+  | { type: 'key-vault'; uri: string }
+  | { type: 'git-hub-app'; installation_id: string }
+  | { type: 'entra-wif'; tenant_id: string; client_id: string }
+  | { type: 'encrypted-inline'; ciphertext: string; nonce: string }
+
+/** A redacted connection as returned by the API (never carries secret values). */
+export interface ConnectionView {
+  id: string
+  tenant: string
+  name: string
+  kind:
+    | { kind: 'azure-devops'; org_url: string; auth: SecretRefView }
+    | { kind: 'github'; org: string; auth: SecretRefView }
+    | {
+        kind: 'llm'
+        provider: string
+        base_url?: string
+        model: string
+        key?: SecretRefView
+        is_local?: boolean
+        residency?: string
+      }
+  updatedBy: string
+  updatedAt: string
+}
+
 /** A category of manual follow-up in the runbook (mirrors bifrost-core). */
 export type ChecklistCategory =
   | 'secret'

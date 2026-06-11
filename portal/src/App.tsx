@@ -9,6 +9,7 @@ import { PipelineDrawer } from './components/PipelineDrawer'
 import { ProposalPanel } from './components/ProposalPanel'
 import { DocsPage } from './components/DocsPage'
 import { ReviewQueue } from './components/ReviewQueue'
+import { Connections } from './components/Connections'
 import { riskMeta } from './lib/format'
 import { useTheme } from './lib/theme'
 
@@ -16,7 +17,7 @@ const api = createApi()
 
 type View = 'heatmap' | 'table'
 type Filter = RiskBand | 'all'
-type Page = 'portfolio' | 'review' | 'docs'
+type Page = 'portfolio' | 'review' | 'connections' | 'docs'
 
 export default function App() {
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null)
@@ -58,6 +59,8 @@ export default function App() {
 
       {page === 'docs' ? (
         <DocsPage />
+      ) : page === 'connections' ? (
+        <Connections api={api} />
       ) : error ? (
         <div className="flex flex-1 items-center justify-center text-[var(--color-risk-red)]">
           Failed to load portfolio: {error}
