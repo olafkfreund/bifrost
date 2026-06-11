@@ -52,6 +52,9 @@ pub struct Pipeline {
     pub id: String,
     pub name: String,
     pub project: String,
+    /// Owning source org (multi-org, #156). Empty for single-org audits.
+    #[serde(default)]
+    pub org: String,
     pub classification: Classification,
     /// Share of steps the Importer converted automatically (0–1).
     pub converted_ratio: f64,
@@ -75,6 +78,9 @@ pub struct Pipeline {
 #[serde(rename_all = "camelCase")]
 pub struct PortfolioTotals {
     pub pipelines: u32,
+    /// Distinct source orgs across the portfolio (multi-org, #156).
+    #[serde(default)]
+    pub orgs: u32,
     pub projects: u32,
     pub yaml: u32,
     pub classic: u32,
@@ -111,12 +117,20 @@ impl Portfolio {
     pub fn totals_from(pipelines: &[Pipeline]) -> PortfolioTotals {
         let count =
             |pred: &dyn Fn(&Pipeline) -> bool| pipelines.iter().filter(|p| pred(p)).count() as u32;
-        let mut projects: Vec<&str> = pipelines.iter().map(|p| p.project.as_str()).collect();
-        projects.sort_unstable();
-        projects.dedup();
+        let distinct = |key: &dyn Fn(&Pipeline) -> &str| {
+            let mut v: Vec<&str> = pipelines
+                .iter()
+                .map(key)
+                .filter(|s| !s.is_empty())
+                .collect();
+            v.sort_unstable();
+            v.dedup();
+            v.len() as u32
+        };
         PortfolioTotals {
             pipelines: pipelines.len() as u32,
-            projects: projects.len() as u32,
+            orgs: distinct(&|p| p.org.as_str()),
+            projects: distinct(&|p| p.project.as_str()),
             yaml: count(&|p| p.classification == Classification::Yaml),
             classic: count(&|p| p.classification == Classification::Classic),
             green: count(&|p| p.risk_band == RiskBand::Green),

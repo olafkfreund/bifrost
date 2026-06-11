@@ -32,7 +32,9 @@ pub use importer::{
     parse_audit_summary, parse_dry_run, parse_forecast, Forecast, Importer, ImporterError,
     MockImporter,
 };
-pub use orchestrator::{audit_org, audit_portfolio, AuditConfig, OrchestrationError};
+pub use orchestrator::{
+    audit_org, audit_portfolio, merge_portfolios, AuditConfig, OrchestrationError,
+};
 pub use publisher::{
     CommitRequest, CommitResult, GitHubPublisher, MockPublisher, PublishError, Publisher,
 };

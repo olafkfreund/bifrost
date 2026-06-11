@@ -62,8 +62,7 @@ struct AppState {
     /// Whether a valid token is required on `/api/*` (else open / local admin).
     auth_enabled: bool,
     /// Resolves connection secret references at use-time (#154; consumed by the
-    /// per-connection audit path in #156).
-    #[allow(dead_code)]
+    /// per-connection multi-org audit in #156).
     secrets: Arc<dyn secrets::SecretResolver>,
 }
 
@@ -120,11 +119,88 @@ async fn portfolio(
     Json(portfolio)
 }
 
-/// Re-resolve the portfolio (e.g. re-run the live audit) and update the cache.
-async fn refresh(State(state): State<Shared>) -> Json<Portfolio> {
-    let fresh = resolve_portfolio().await;
+/// Re-resolve the portfolio and update the cache. When the caller's tenant has
+/// **ADO connections** (#154), audit across all of them and merge into one
+/// org-tagged portfolio (#156); otherwise fall back to the single-org env path.
+async fn refresh(
+    State(state): State<Shared>,
+    Extension(caller): Extension<Identity>,
+) -> Json<Portfolio> {
+    let fresh = match build_from_connections(&state, &caller.tenant).await {
+        Some(p) => p,
+        None => resolve_portfolio().await,
+    };
     *state.portfolio.write().await = fresh.clone();
     Json(fresh)
+}
+
+/// Resolve an ADO connection's `(org_url, pat)` — the PAT via the secret resolver.
+/// `None` for a non-ADO connection or an unresolvable secret.
+async fn ado_inputs(
+    conn: &Connection,
+    resolver: &dyn secrets::SecretResolver,
+) -> Option<(String, String)> {
+    let ConnectionKind::AzureDevOps { org_url, auth } = &conn.kind else {
+        return None;
+    };
+    let pat = resolver.resolve(auth).await.ok()?;
+    Some((org_url.clone(), pat))
+}
+
+/// Build a tenant-wide, org-tagged portfolio by auditing every ADO connection the
+/// tenant owns and merging the results (#156). Live (Docker + ADO); returns `None`
+/// when the tenant has no ADO connections or none could be audited, so the caller
+/// falls back to the single-org path.
+async fn build_from_connections(state: &AppState, tenant: &str) -> Option<Portfolio> {
+    use bifrost_adapters::docker_importer::org_from_url;
+    use bifrost_adapters::{
+        audit_portfolio, merge_portfolios, AuditConfig, AzureDevOpsAdapter, DockerImporter,
+        Importer, SourceAdapter,
+    };
+
+    let conns = state.store.list_connections(tenant).await.ok()?;
+    let air_gap = std::env::var("BIFROST_AIR_GAP")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+
+    let mut portfolios = Vec::new();
+    for conn in &conns {
+        let Some((org_url, pat)) = ado_inputs(conn, state.secrets.as_ref()).await else {
+            continue;
+        };
+        let org = org_from_url(&org_url).to_string();
+        // Pick a project to drive the Importer (org-level audit; per-project
+        // precision is #31). Enumerate is across the whole org via the adapter.
+        let probe = AzureDevOpsAdapter::new(&org_url, "", &pat);
+        let Some(project) = probe
+            .discover()
+            .await
+            .ok()
+            .and_then(|ps| ps.into_iter().next())
+        else {
+            continue;
+        };
+        let adapter = AzureDevOpsAdapter::new(&org_url, &project.name, &pat);
+        let importer = DockerImporter::new(&org, &project.name);
+        let config = AuditConfig {
+            org: org.clone(),
+            importer_version: importer
+                .version()
+                .await
+                .unwrap_or_else(|_| "unknown".into()),
+            importer_image_digest: importer.image_digest().await.unwrap_or_default(),
+            ado2gh_version: "n/a".into(),
+            air_gap,
+            generated_at: now_iso8601(),
+        };
+        if let Ok(p) = audit_portfolio(&adapter, &importer, config).await {
+            portfolios.push(p);
+        }
+    }
+    if portfolios.is_empty() {
+        return None;
+    }
+    Some(merge_portfolios(portfolios, now_iso8601(), air_gap))
 }
 
 /// Convert one pipeline into a proposal (+ runbook), storing it for review.
@@ -1938,6 +2014,54 @@ mod tests {
             .0;
         assert_eq!(del["deleted"], id);
         std::env::remove_var("BIFROST_SECRET_KEY");
+    }
+
+    #[tokio::test]
+    async fn ado_inputs_resolves_org_url_and_secret() {
+        // An ADO connection with an inline (encrypted) PAT resolves to (org_url, pat).
+        let auth = secrets::encrypt_with("k", "the-pat").unwrap();
+        let conn = Connection {
+            id: "c".into(),
+            tenant: "acme".into(),
+            name: "ado".into(),
+            kind: ConnectionKind::AzureDevOps {
+                org_url: "https://dev.azure.com/acme".into(),
+                auth,
+            },
+            updated_by: "a".into(),
+            updated_at: "t".into(),
+        };
+        std::env::set_var("BIFROST_SECRET_KEY", "k");
+        let resolver = secrets::DefaultSecretResolver;
+        let (url, pat) = ado_inputs(&conn, &resolver).await.unwrap();
+        assert_eq!(url, "https://dev.azure.com/acme");
+        assert_eq!(pat, "the-pat");
+        std::env::remove_var("BIFROST_SECRET_KEY");
+
+        // A non-ADO (LLM) connection yields None.
+        let llm = Connection {
+            kind: ConnectionKind::Llm {
+                provider: "ollama".into(),
+                base_url: None,
+                model: "x".into(),
+                key: None,
+                is_local: true,
+                residency: None,
+            },
+            ..conn
+        };
+        assert!(ado_inputs(&llm, &resolver).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn sample_portfolio_tags_org() {
+        let state = test_state();
+        let pf = portfolio(State(state.clone()), admin()).await.0;
+        assert!(pf.summary.totals.orgs >= 1, "totals carry an org count");
+        assert!(
+            pf.pipelines.iter().all(|p| !p.org.is_empty()),
+            "every pipeline is org-tagged"
+        );
     }
 
     #[tokio::test]
