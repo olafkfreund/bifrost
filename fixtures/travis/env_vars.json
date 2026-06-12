@@ -1,0 +1,6 @@
+{
+  "env_vars": [
+    { "name": "PUBLIC_API_URL", "public": true, "value": "https://api.example.com" },
+    { "name": "DEPLOY_SECRET", "public": false }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "repositories": [
+    { "name": "web", "slug": "acme/web", "active": true, "default_branch": { "name": "main" }, "owner": { "login": "acme" } },
+    { "name": "api", "slug": "acme/api", "active": true, "default_branch": { "name": "main" }, "owner": { "login": "acme" } },
+    { "name": "infra", "slug": "platform/infra", "active": true, "default_branch": { "name": "master" }, "owner": { "login": "platform" } }
+  ]
+}

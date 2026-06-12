@@ -18,6 +18,7 @@ pub mod jenkins;
 pub mod orchestrator;
 pub mod publisher;
 pub mod source;
+pub mod travis;
 pub mod validate;
 
 /// Centralized fixture loader for tests (#17). Test-only.
@@ -49,6 +50,7 @@ pub use publisher::{
     CommitRequest, CommitResult, GitHubPublisher, MockPublisher, PublishError, Publisher,
 };
 pub use source::{AdapterError, MockSourceAdapter, SourceAdapter};
+pub use travis::TravisAdapter;
 pub use validate::{
     declared_outputs, GitHubRunCollector, GitHubSandboxTrigger, MockRunCollector,
     MockSandboxTrigger, RunArtifact, RunCollector, RunJob, RunQuery, RunResult, SandboxTrigger,
