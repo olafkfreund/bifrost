@@ -1,0 +1,6 @@
+{
+  "values": [
+    { "key": "REGISTRY_URL", "secured": false, "type": "pipeline_variable" },
+    { "key": "DEPLOY_KEY", "secured": true, "type": "pipeline_variable" }
+  ]
+}

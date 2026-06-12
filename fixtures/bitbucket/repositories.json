@@ -1,0 +1,26 @@
+{
+  "values": [
+    {
+      "name": "web-app",
+      "full_name": "acme/web-app",
+      "slug": "web-app",
+      "mainbranch": { "name": "main" },
+      "project": { "key": "PLAT", "name": "Platform" }
+    },
+    {
+      "name": "legacy-svc",
+      "full_name": "acme/legacy-svc",
+      "slug": "legacy-svc",
+      "mainbranch": { "name": "master" },
+      "project": { "key": "PLAT", "name": "Platform" }
+    },
+    {
+      "name": "data-jobs",
+      "full_name": "acme/data-jobs",
+      "slug": "data-jobs",
+      "mainbranch": { "name": "main" },
+      "project": { "key": "DATA", "name": "Data" }
+    }
+  ],
+  "next": null
+}
