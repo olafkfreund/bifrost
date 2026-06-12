@@ -106,10 +106,33 @@ pub struct PortfolioSummary {
     pub totals: PortfolioTotals,
 }
 
+/// The audit detail a change-management report needs (#220): the names of the
+/// secrets/variables/connections to set up in GitHub, the constructs that need
+/// manual rework, and the Actions allow-list — beyond the headline counts.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortfolioAudit {
+    /// Manual tasks (secret names, self-hosted runners) the Importer flagged.
+    pub manual_tasks: Vec<crate::audit::ManualTask>,
+    /// Unsupported constructs the Importer could not convert (need rework).
+    pub unsupported_steps: Vec<crate::audit::UnsupportedStep>,
+    /// The GitHub Actions allow-list the converted workflows require.
+    pub actions: Vec<String>,
+    /// Service connections / integrations to recreate in GitHub (names + types,
+    /// per project — never secret values).
+    pub service_connections: Vec<crate::ingestion::ServiceConnection>,
+    /// Variable groups (names + secret flag, per project) to add to GitHub.
+    pub variable_groups: Vec<crate::ingestion::VariableGroup>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Portfolio {
     pub summary: PortfolioSummary,
     pub pipelines: Vec<Pipeline>,
+    /// Audit detail for the change-management report (#220). Empty for the
+    /// sample/offline portfolio; populated by a live audit.
+    #[serde(default)]
+    pub audit: PortfolioAudit,
 }
 
 impl Portfolio {

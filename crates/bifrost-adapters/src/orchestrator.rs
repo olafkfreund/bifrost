@@ -82,6 +82,8 @@ pub async fn audit_org(
             totals,
         },
         pipelines,
+        // Per-pipeline dry-run path doesn't aggregate the report-level audit detail.
+        audit: bifrost_core::PortfolioAudit::default(),
     })
 }
 
@@ -161,6 +163,14 @@ pub async fn audit_portfolio(
             totals,
         },
         pipelines,
+        // Carry the detail a change-management report needs (#220).
+        audit: bifrost_core::PortfolioAudit {
+            manual_tasks: audit.manual_tasks,
+            unsupported_steps: audit.unsupported_steps,
+            actions: audit.actions,
+            service_connections: connections,
+            variable_groups: groups,
+        },
     })
 }
 
@@ -178,6 +188,7 @@ pub fn merge_portfolios(
     let mut importer_version = String::new();
     let mut importer_image_digest = String::new();
     let mut ado2gh_version = String::new();
+    let mut audit = bifrost_core::PortfolioAudit::default();
     for p in portfolios {
         if importer_version.is_empty() {
             importer_version = p.summary.importer_version;
@@ -185,7 +196,17 @@ pub fn merge_portfolios(
             ado2gh_version = p.summary.ado2gh_version;
         }
         pipelines.extend(p.pipelines);
+        // Merge each source's report detail (per-project rows stay distinct).
+        audit.manual_tasks.extend(p.audit.manual_tasks);
+        audit.unsupported_steps.extend(p.audit.unsupported_steps);
+        audit.actions.extend(p.audit.actions);
+        audit
+            .service_connections
+            .extend(p.audit.service_connections);
+        audit.variable_groups.extend(p.audit.variable_groups);
     }
+    audit.actions.sort();
+    audit.actions.dedup();
     let totals = Portfolio::totals_from(&pipelines);
     let mut orgs: Vec<&str> = pipelines
         .iter()
@@ -205,6 +226,7 @@ pub fn merge_portfolios(
             totals,
         },
         pipelines,
+        audit,
     }
 }
 

@@ -294,5 +294,41 @@ pub fn portfolio() -> Portfolio {
             totals,
         },
         pipelines,
+        // Sample report detail so the offline status report shows GitHub setup.
+        audit: bifrost_core::PortfolioAudit {
+            manual_tasks: vec![bifrost_core::ManualTask {
+                kind: bifrost_core::ManualTaskKind::Secret,
+                name: "NUGET_API_KEY".into(),
+            }],
+            unsupported_steps: vec![bifrost_core::UnsupportedStep {
+                task: "DownloadSecureFile@1".into(),
+                count: 4,
+            }],
+            actions: vec![
+                "actions/checkout@v4".into(),
+                "actions/setup-dotnet@v4".into(),
+            ],
+            service_connections: vec![bifrost_core::ServiceConnection {
+                id: "sc1".into(),
+                name: "azure-prod".into(),
+                kind: "azurerm".into(),
+                project: "Storefront".into(),
+            }],
+            variable_groups: vec![bifrost_core::VariableGroup {
+                id: "vg1".into(),
+                name: "shared".into(),
+                project: "Storefront".into(),
+                variables: vec![
+                    bifrost_core::VariableRef {
+                        name: "API_URL".into(),
+                        is_secret: false,
+                    },
+                    bifrost_core::VariableRef {
+                        name: "API_TOKEN".into(),
+                        is_secret: true,
+                    },
+                ],
+            }],
+        },
     }
 }
