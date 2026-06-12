@@ -7,7 +7,7 @@ url: https://bitfrost.freundcloud.com
 baseurl: ""
 
 # just-the-docs settings
-color_scheme: dark
+color_scheme: gruvbox-dark
 search_enabled: true
 heading_anchors: true
 
