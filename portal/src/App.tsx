@@ -12,6 +12,7 @@ import { DocsPage } from './components/DocsPage'
 import { Forecast } from './components/Forecast'
 import { Completeness } from './components/Completeness'
 import { Assessment } from './components/Assessment'
+import { Program } from './components/Program'
 import { Readiness } from './components/Readiness'
 import { ChatPopout } from './components/ChatPopout'
 import { ReviewQueue } from './components/ReviewQueue'
@@ -30,6 +31,7 @@ type Page =
   | 'assessment'
   | 'forecast'
   | 'completeness'
+  | 'program'
   | 'review'
   | 'connections'
   | 'routing'
@@ -117,6 +119,8 @@ export default function App() {
         <Assessment api={api} />
       ) : page === 'completeness' ? (
         <Completeness api={api} />
+      ) : page === 'program' ? (
+        <Program api={api} />
       ) : error ? (
         <div className="flex flex-1 items-center justify-center text-[var(--color-risk-red)]">
           Failed to load portfolio: {error}

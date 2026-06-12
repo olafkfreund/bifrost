@@ -11,6 +11,7 @@ import type {
   ReadinessItem,
   SecretRefView,
   SourceStats,
+  WavePlan,
 } from '../types'
 import { mockPortfolio } from '../data/portfolio'
 
@@ -54,6 +55,8 @@ export interface BifrostApi {
   getReportPdf(project?: string): Promise<Blob>
   /** Deterministic GitHub Actions cost + capacity forecast (#237). */
   getForecast(): Promise<Forecast>
+  /** Wave/cohort program plan (#242). */
+  getProgram(): Promise<WavePlan[]>
   /** Source (Azure DevOps) assessment statistics (#240). */
   getSourceStats(): Promise<SourceStats>
   /** Target GitHub pre-flight readiness checklist (#239). */
@@ -378,6 +381,38 @@ class MockBifrostApi implements BifrostApi {
       maxJobMinutes: 38.0,
     }
     return f
+  }
+  async getProgram(): Promise<WavePlan[]> {
+    // Mirrors `bifrost_core::program` over the demo portfolio.
+    const waveOf = (p: Pipeline) =>
+      p.classification === 'classic' || p.riskBand === 'red' ? 3 : p.riskBand === 'green' ? 1 : 2
+    const meta: Record<number, { name: string; rationale: string }> = {
+      1: { name: 'Pilot', rationale: 'Low-risk YAML pipelines — migrate these first to prove the process.' },
+      2: { name: 'Early majority', rationale: 'Amber YAML pipelines — standard conversions once the pilot succeeds.' },
+      3: { name: 'Late majority', rationale: 'Classic/designer and high-risk pipelines — the hard tail; needs the most review.' },
+    }
+    const inProg = new Set(['draft', 'in_review', 'changes_requested'])
+    const isDone = new Set(['approved', 'committed', 'validated'])
+    return [1, 2, 3].map((wave) => {
+      const members = mockPortfolio.pipelines.filter((p) => waveOf(p) === wave).map((p) => this.overlay(p))
+      const c = (pred: (p: Pipeline) => boolean) => members.filter(pred).length
+      return {
+        wave,
+        name: meta[wave].name,
+        rationale: meta[wave].rationale,
+        pipelines: members.length,
+        green: c((p) => p.riskBand === 'green'),
+        amber: c((p) => p.riskBand === 'amber'),
+        red: c((p) => p.riskBand === 'red'),
+        yaml: c((p) => p.classification === 'yaml'),
+        classic: c((p) => p.classification === 'classic'),
+        forecastMinutes: members.reduce((s, p) => s + p.forecastMinutes, 0),
+        notStarted: c((p) => p.status === 'not_started'),
+        inProgress: c((p) => inProg.has(p.status)),
+        done: c((p) => isDone.has(p.status)),
+        projects: [...new Set(members.map((p) => p.project).filter(Boolean))].sort(),
+      }
+    })
   }
   async getSourceStats(): Promise<SourceStats> {
     const t = mockPortfolio.summary.totals
@@ -733,6 +768,11 @@ class HttpBifrostApi implements BifrostApi {
     const res = await fetch(`${this.base}/forecast`, { headers: this.headers() })
     if (!res.ok) throw new Error(`forecast request failed: ${res.status}`)
     return (await res.json()) as Forecast
+  }
+  async getProgram(): Promise<WavePlan[]> {
+    const res = await fetch(`${this.base}/program`, { headers: this.headers() })
+    if (!res.ok) throw new Error(`program request failed: ${res.status}`)
+    return (await res.json()) as WavePlan[]
   }
   async getSourceStats(): Promise<SourceStats> {
     const res = await fetch(`${this.base}/source-stats`, { headers: this.headers() })
