@@ -92,25 +92,14 @@ impl LlmProvider for OpenAiCompatibleProvider {
             }],
         };
 
-        let mut request = self.client.post(self.endpoint()).json(&body);
-        if let Some(key) = &self.key {
-            request = request.bearer_auth(key);
-        }
-        let resp = request
-            .send()
-            .await
-            .map_err(|e| LlmError::Transport(e.to_string()))?;
-
-        let status = resp.status();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| LlmError::Transport(e.to_string()))?;
-        if !status.is_success() {
-            return Err(LlmError::Transport(format!(
-                "openai-compatible {status}: {text}"
-            )));
-        }
+        let text = crate::http_text_with_retry("openai-compatible", || {
+            let mut request = self.client.post(self.endpoint()).json(&body);
+            if let Some(key) = &self.key {
+                request = request.bearer_auth(key);
+            }
+            request
+        })
+        .await?;
 
         let parsed: ChatResponse = serde_json::from_str(&text)
             .map_err(|e| LlmError::Parse(format!("response envelope: {e}: {text}")))?;

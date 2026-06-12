@@ -24,6 +24,11 @@ services:
       # conversion job; concurrency caps in-flight calls to frontier providers.
       BIFROST_TOKEN_BUDGET: ${BIFROST_TOKEN_BUDGET:-}
       BIFROST_LLM_MAX_CONCURRENCY: ${BIFROST_LLM_MAX_CONCURRENCY:-}
+      # External-call resilience (#106). Retries/backoff default to 3 attempts /
+      # 200ms base; override per source (BIFROST_ADO/JENKINS/GITLAB/LLM_RETRY_*).
+      # Importer subprocess wall-clock cap (seconds, default 600).
+      BIFROST_IMPORTER_TIMEOUT_SECS: ${BIFROST_IMPORTER_TIMEOUT_SECS:-}
+      BIFROST_LLM_RETRY_ATTEMPTS: ${BIFROST_LLM_RETRY_ATTEMPTS:-}
       # HMAC signing key for attestation export (#62/#63). Set in production.
       BIFROST_SIGNING_KEY: ${BIFROST_SIGNING_KEY:-}
       BIFROST_SIGNING_KEY_ID: ${BIFROST_SIGNING_KEY_ID:-}

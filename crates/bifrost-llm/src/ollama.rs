@@ -75,22 +75,8 @@ impl LlmProvider for OllamaProvider {
         };
 
         let url = format!("{}/api/chat", self.base_url);
-        let resp = self
-            .client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| LlmError::Transport(e.to_string()))?;
-
-        let status = resp.status();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| LlmError::Transport(e.to_string()))?;
-        if !status.is_success() {
-            return Err(LlmError::Transport(format!("ollama {status}: {text}")));
-        }
+        let text =
+            crate::http_text_with_retry("ollama", || self.client.post(&url).json(&body)).await?;
 
         let parsed: ChatResponse = serde_json::from_str(&text)
             .map_err(|e| LlmError::Parse(format!("response envelope: {e}: {text}")))?;

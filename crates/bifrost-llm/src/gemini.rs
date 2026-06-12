@@ -80,23 +80,13 @@ impl LlmProvider for GeminiProvider {
             }],
         };
 
-        let resp = self
-            .client
-            .post(self.endpoint())
-            .header("x-goog-api-key", &self.api_key)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| LlmError::Transport(e.to_string()))?;
-
-        let status = resp.status();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| LlmError::Transport(e.to_string()))?;
-        if !status.is_success() {
-            return Err(LlmError::Transport(format!("gemini {status}: {text}")));
-        }
+        let text = crate::http_text_with_retry("gemini", || {
+            self.client
+                .post(self.endpoint())
+                .header("x-goog-api-key", &self.api_key)
+                .json(&body)
+        })
+        .await?;
 
         let parsed: GenerateResponse = serde_json::from_str(&text)
             .map_err(|e| LlmError::Parse(format!("response envelope: {e}: {text}")))?;

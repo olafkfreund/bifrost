@@ -19,6 +19,7 @@ pub mod cost;
 mod gemini;
 mod ollama;
 mod openai_compatible;
+pub mod resilience;
 
 pub use anthropic::AnthropicProvider;
 pub use copilot::CopilotProvider;
@@ -29,6 +30,7 @@ pub use cost::{
 pub use gemini::GeminiProvider;
 pub use ollama::OllamaProvider;
 pub use openai_compatible::OpenAiCompatibleProvider;
+pub use resilience::{classify_reqwest, classify_status, retry, ErrorClass, RetryPolicy};
 
 use async_trait::async_trait;
 use bifrost_core::Gap;
@@ -103,6 +105,54 @@ pub trait LlmProvider: Send + Sync {
     fn is_local(&self) -> bool;
     /// Fill a single gap, grounded in the request's diff.
     async fn fill_gap(&self, req: &GapFillRequest) -> Result<GapFillResponse, LlmError>;
+}
+
+/// Per-request timeout for an LLM HTTP call (#106). Generous — frontier models
+/// can take tens of seconds — but bounded so a hung connection becomes a retry.
+pub(crate) const LLM_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Send an LLM HTTP request and return the response body text, with bounded
+/// retries + backoff on transient failures (#106). `make_request` is called fresh
+/// each attempt (the request is single-use). Transport failures and 429/5xx are
+/// retried; a successful non-2xx body and parse errors are surfaced to the caller.
+/// Shared by every provider so resilience policy lives in one place.
+pub(crate) async fn http_text_with_retry(
+    provider: &str,
+    make_request: impl Fn() -> reqwest::RequestBuilder,
+) -> Result<String, LlmError> {
+    resilience::retry(
+        resilience::RetryPolicy::from_env("BIFROST_LLM"),
+        |e: &LlmError| match e {
+            LlmError::Transport(_) => resilience::ErrorClass::Retryable,
+            _ => resilience::ErrorClass::Permanent,
+        },
+        || {
+            let rb = make_request().timeout(LLM_HTTP_TIMEOUT);
+            async move {
+                let resp = rb
+                    .send()
+                    .await
+                    .map_err(|e| LlmError::Transport(e.to_string()))?;
+                let status = resp.status();
+                let text = resp
+                    .text()
+                    .await
+                    .map_err(|e| LlmError::Transport(e.to_string()))?;
+                if status.is_success() {
+                    Ok(text)
+                } else if resilience::classify_status(status.as_u16())
+                    == resilience::ErrorClass::Retryable
+                {
+                    // 429/5xx — retryable, surfaced as Transport.
+                    Err(LlmError::Transport(format!("{provider} {status}: {text}")))
+                } else {
+                    // 4xx (auth/validation) — permanent; Parse short-circuits retry.
+                    Err(LlmError::Parse(format!("{provider} {status}: {text}")))
+                }
+            }
+        },
+    )
+    .await
 }
 
 /// The versioned grounded prompt template (referenced by id for auditability).

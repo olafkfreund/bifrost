@@ -19,7 +19,9 @@ use bifrost_core::{
 };
 use serde_json::Value;
 
-use crate::source::{AdapterError, SourceAdapter};
+use bifrost_llm::{retry, RetryPolicy};
+
+use crate::source::{classify_adapter_error, AdapterError, SourceAdapter, HTTP_TIMEOUT};
 
 // ---- pure parsers (fixture-tested) -----------------------------------------
 
@@ -157,12 +159,23 @@ impl GitLabAdapter {
         Ok(Self::new(base, token))
     }
 
+    /// GET JSON with bounded retries + backoff on transient failures (#106).
     async fn get(&self, path: &str) -> Result<Value, AdapterError> {
+        retry(
+            RetryPolicy::from_env("BIFROST_GITLAB"),
+            classify_adapter_error,
+            || self.get_attempt(path),
+        )
+        .await
+    }
+
+    async fn get_attempt(&self, path: &str) -> Result<Value, AdapterError> {
         let url = format!("{}/api/v4/{path}", self.base_url);
         let resp = self
             .client
             .get(&url)
             .header("PRIVATE-TOKEN", &self.token)
+            .timeout(HTTP_TIMEOUT)
             .send()
             .await
             .map_err(|e| AdapterError::Transport(e.to_string()))?;
@@ -180,13 +193,24 @@ impl GitLabAdapter {
         }
     }
 
-    /// Fetch the raw text of a file in a project at a ref (used for `.gitlab-ci.yml`).
+    /// Fetch the raw text of a file in a project at a ref (used for `.gitlab-ci.yml`),
+    /// with bounded retries + backoff on transient failures (#106).
     async fn get_raw(&self, path: &str) -> Result<String, AdapterError> {
+        retry(
+            RetryPolicy::from_env("BIFROST_GITLAB"),
+            classify_adapter_error,
+            || self.get_raw_attempt(path),
+        )
+        .await
+    }
+
+    async fn get_raw_attempt(&self, path: &str) -> Result<String, AdapterError> {
         let url = format!("{}/api/v4/{path}", self.base_url);
         let resp = self
             .client
             .get(&url)
             .header("PRIVATE-TOKEN", &self.token)
+            .timeout(HTTP_TIMEOUT)
             .send()
             .await
             .map_err(|e| AdapterError::Transport(e.to_string()))?;

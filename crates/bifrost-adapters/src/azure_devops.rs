@@ -15,8 +15,10 @@ use bifrost_core::{
 };
 use serde_json::Value;
 
+use bifrost_llm::{retry, RetryPolicy};
+
 use crate::ado_auth::{AdoAuth, EntraAuth, PatAuth};
-use crate::source::{AdapterError, SourceAdapter};
+use crate::source::{classify_adapter_error, AdapterError, SourceAdapter, HTTP_TIMEOUT};
 
 const API_VERSION: &str = "7.1";
 
@@ -208,8 +210,22 @@ impl AzureDevOpsAdapter {
         self.send(&url).await
     }
 
+    /// GET with bounded retries + backoff on transient failures (#106). The
+    /// per-attempt request is rebuilt each try (the auth header may have refreshed).
     async fn send(&self, url: &str) -> Result<Value, AdapterError> {
-        let req = self.auth.apply(self.client.get(url)).await?;
+        retry(
+            RetryPolicy::from_env("BIFROST_ADO"),
+            classify_adapter_error,
+            || self.attempt(url),
+        )
+        .await
+    }
+
+    async fn attempt(&self, url: &str) -> Result<Value, AdapterError> {
+        let req = self
+            .auth
+            .apply(self.client.get(url).timeout(HTTP_TIMEOUT))
+            .await?;
         let resp = req
             .send()
             .await

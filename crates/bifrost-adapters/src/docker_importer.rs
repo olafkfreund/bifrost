@@ -31,6 +31,17 @@ static AUDIT_SEQ: AtomicU64 = AtomicU64::new(0);
 /// log so it can never fill the disk. Real audit reports are far smaller.
 const MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024;
 
+/// Wall-clock cap on one Importer subprocess run (#106), from
+/// `BIFROST_IMPORTER_TIMEOUT_SECS`; default 600s.
+fn importer_timeout() -> std::time::Duration {
+    let secs = std::env::var("BIFROST_IMPORTER_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(600);
+    std::time::Duration::from_secs(secs)
+}
+
 /// `id <flag>` as a string (uid/gid), or `None` if it can't be read.
 async fn id_value(flag: &str) -> Option<String> {
     let out = Command::new("id").arg(flag).output().await.ok()?;
@@ -256,9 +267,17 @@ impl DockerImporter {
             .env("AZURE_DEVOPS_ACCESS_TOKEN", pat)
             .env("AZURE_DEVOPS_INSTANCE_URL", "https://dev.azure.com");
 
-        let out = cmd
-            .output()
+        // Bound the run so a hung Importer/Docker invocation can't stall a job
+        // forever (#106). Configurable via BIFROST_IMPORTER_TIMEOUT_SECS (default
+        // 600s). On timeout the detached `--rm` container is reaped by Docker.
+        let out = tokio::time::timeout(importer_timeout(), cmd.output())
             .await
+            .map_err(|_| {
+                Self::err(format!(
+                    "docker run timed out after {}s",
+                    importer_timeout().as_secs()
+                ))
+            })?
             .map_err(|e| Self::err(format!("docker spawn failed: {e}")))?;
         // Surface the importer's own logs on stderr for visibility.
         eprint!("{}", String::from_utf8_lossy(&out.stdout));

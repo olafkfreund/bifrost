@@ -22,6 +22,21 @@ pub enum AdapterError {
     Transport(String),
 }
 
+/// Per-request HTTP timeout for adapter REST calls (#106). Long enough for a slow
+/// ADO/GitLab/Jenkins page, short enough that a hung connection becomes a retry.
+pub(crate) const HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Classify an [`AdapterError`] for retry (#106): transport failures (timeouts,
+/// resets, 5xx/429) are transient; auth and not-found are permanent. Shared by
+/// every HTTP adapter (ADO, Jenkins, GitLab).
+pub(crate) fn classify_adapter_error(e: &AdapterError) -> bifrost_llm::ErrorClass {
+    use bifrost_llm::ErrorClass;
+    match e {
+        AdapterError::Transport(_) => ErrorClass::Retryable,
+        AdapterError::Auth(_) | AdapterError::NotFound(_) => ErrorClass::Permanent,
+    }
+}
+
 /// Read-only access to a CI source platform.
 ///
 /// ADO is the first implementation; keep this platform-agnostic so Jenkins,
