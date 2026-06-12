@@ -44,8 +44,8 @@ export interface BifrostApi {
   setAirGap(enabled: boolean): Promise<Settings>
   /** LLM providers routable for this tenant + how to enable the rest (#197). */
   getProviders(): Promise<ProvidersView>
-  /** The pre-migration status report as Markdown (#204) — read-only assessment. */
-  getReport(): Promise<string>
+  /** The pre-migration status report as Markdown (#204), optionally scoped to a project. */
+  getReport(project?: string): Promise<string>
   /** The status report as a PDF blob (#221), optionally scoped to a project. */
   getReportPdf(project?: string): Promise<Blob>
 }
@@ -344,11 +344,13 @@ class MockBifrostApi implements BifrostApi {
     ]
     return { live: false, available: ['anthropic', 'ollama'], catalog }
   }
-  async getReport(): Promise<string> {
-    return '# Migration Status Report\n\n> This is a pre-migration assessment. No changes have been made.\n'
+  async getReport(project?: string): Promise<string> {
+    const scope = project ? `Project: ${project}` : 'Whole estate'
+    return `# Migration Status Report\n\n> ${scope} — pre-migration assessment. No changes have been made.\n`
   }
-  async getReportPdf(): Promise<Blob> {
-    return new Blob(['%PDF-1.5 (mock)'], { type: 'application/pdf' })
+  async getReportPdf(project?: string): Promise<Blob> {
+    const scope = project ? ` ${project}` : ''
+    return new Blob([`%PDF-1.5 (mock${scope})`], { type: 'application/pdf' })
   }
 }
 
@@ -542,8 +544,9 @@ class HttpBifrostApi implements BifrostApi {
     if (!res.ok) throw new Error(`providers request failed: ${res.status}`)
     return (await res.json()) as ProvidersView
   }
-  async getReport(): Promise<string> {
-    const res = await fetch(`${this.base}/report`, { headers: this.headers() })
+  async getReport(project?: string): Promise<string> {
+    const q = project ? `?project=${encodeURIComponent(project)}` : ''
+    const res = await fetch(`${this.base}/report${q}`, { headers: this.headers() })
     if (!res.ok) throw new Error(`report request failed: ${res.status}`)
     return await res.text()
   }

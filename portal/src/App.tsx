@@ -21,6 +21,14 @@ type View = 'heatmap' | 'table'
 type Filter = RiskBand | 'all'
 type Page = 'portfolio' | 'review' | 'connections' | 'routing' | 'docs'
 
+/** Slugify a project name for use in a download filename. */
+function slugify(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
+
 /** Trigger a browser download of a blob with the given filename. */
 function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob)
@@ -39,6 +47,7 @@ export default function App() {
   const [view, setView] = useState<View>('heatmap')
   const [filter, setFilter] = useState<Filter>('all')
   const [orgFilter, setOrgFilter] = useState<string>('all')
+  const [reportProject, setReportProject] = useState<string>('')
   const [page, setPage] = useState<Page>('portfolio')
   const [showWizard, setShowWizard] = useState(() => !localStorage.getItem('bifrost_onboarded'))
   const [theme, toggleTheme, togglePalette] = useTheme()
@@ -51,6 +60,13 @@ export default function App() {
   const orgs = useMemo(() => {
     if (!portfolio) return []
     return [...new Set(portfolio.pipelines.map((p) => p.org).filter((o): o is string => !!o))].sort()
+  }, [portfolio])
+
+  // Distinct projects, for the per-project report (#222). Different projects can
+  // have different owners / change boards, so a report can be scoped to one.
+  const projects = useMemo(() => {
+    if (!portfolio) return []
+    return [...new Set(portfolio.pipelines.map((p) => p.project).filter((p): p is string => !!p))].sort()
   }, [portfolio])
 
   const filtered = useMemo(() => {
@@ -151,14 +167,33 @@ export default function App() {
                 ))}
               </div>
 
-              {/* pre-migration status report (#204/#220/#221) — review before any change */}
+              {/* pre-migration status report (#204/#220/#221/#222) — review before any change.
+                  Scopeable to one project, since projects can have different owners / change boards. */}
               <div className="flex overflow-hidden rounded-lg border border-ink-800 text-xs">
                 <span className="px-2 py-1.5 text-ink-400">Report</span>
+                {projects.length > 1 && (
+                  <select
+                    value={reportProject}
+                    onChange={(e) => setReportProject(e.target.value)}
+                    className="border-l border-ink-800 bg-ink-900 px-2 py-1.5 text-ink-100"
+                    title="Scope the report to one project (its owner / change board)"
+                  >
+                    <option value="">Whole estate</option>
+                    {projects.map((p) => (
+                      <option key={p} value={p}>
+                        {p}
+                      </option>
+                    ))}
+                  </select>
+                )}
                 <button
                   onClick={() => {
+                    const slug = reportProject ? `-${slugify(reportProject)}` : ''
                     api
-                      .getReport()
-                      .then((md) => downloadBlob(new Blob([md], { type: 'text/markdown' }), 'migration-status-report.md'))
+                      .getReport(reportProject || undefined)
+                      .then((md) =>
+                        downloadBlob(new Blob([md], { type: 'text/markdown' }), `migration-status-report${slug}.md`),
+                      )
                       .catch((e) => setError(String(e)))
                   }}
                   title="Download the pre-migration status report (Markdown)"
@@ -168,9 +203,10 @@ export default function App() {
                 </button>
                 <button
                   onClick={() => {
+                    const slug = reportProject ? `-${slugify(reportProject)}` : ''
                     api
-                      .getReportPdf()
-                      .then((pdf) => downloadBlob(pdf, 'migration-status-report.pdf'))
+                      .getReportPdf(reportProject || undefined)
+                      .then((pdf) => downloadBlob(pdf, `migration-status-report${slug}.pdf`))
                       .catch((e) => setError(String(e)))
                   }}
                   title="Download the pre-migration status report (PDF) for the change board"
