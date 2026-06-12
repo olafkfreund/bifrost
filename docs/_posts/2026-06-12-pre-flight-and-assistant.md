@@ -1,7 +1,7 @@
 ---
 title: "From audit to pre-flight: forecast, coverage, assessment, readiness, and an assistant"
 layout: default
-date: 2026-06-12 19:00:00 +0100
+date: 2026-06-12 15:00:00 +0100
 nav_exclude: true
 description: "Closing the bookends of the golden path — what GitHub will cost, what's left behind, the source assessment, target readiness, and a grounded chat assistant."
 ---
