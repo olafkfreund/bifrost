@@ -15,12 +15,17 @@
 
 mod anthropic;
 mod copilot;
+pub mod cost;
 mod gemini;
 mod ollama;
 mod openai_compatible;
 
 pub use anthropic::AnthropicProvider;
 pub use copilot::CopilotProvider;
+pub use cost::{
+    estimate_tokens, CostLedger, JobCost, MeteredProvider, PriceTable, ProviderCost, RateLimiter,
+    TokenBudget, TokenUsage,
+};
 pub use gemini::GeminiProvider;
 pub use ollama::OllamaProvider;
 pub use openai_compatible::OpenAiCompatibleProvider;
@@ -84,6 +89,8 @@ pub enum LlmError {
     Parse(String),
     #[error("provider '{0}' is disabled in air-gap mode")]
     AirGapBlocked(String),
+    #[error("token budget exceeded: {0}")]
+    BudgetExceeded(String),
 }
 
 /// An LLM backend. Implementations: Anthropic, Gemini, Copilot/Models, Ollama.
