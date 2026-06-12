@@ -17,7 +17,7 @@ mod store;
 
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use axum::extract::{Path, Request, State};
@@ -26,7 +26,7 @@ use axum::middleware::Next;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::{
-    routing::{get, patch, post},
+    routing::{get, patch, post, put},
     Extension, Json, Router,
 };
 use bifrost_adapters::{
@@ -67,6 +67,31 @@ struct AppState {
     secrets: Arc<dyn secrets::SecretResolver>,
     /// Control-plane metrics, exposed at `/metrics` (#105).
     metrics: metrics::Metrics,
+    /// Runtime air-gap posture (#190), initialised from `BIFROST_AIR_GAP`. When on,
+    /// the Router only uses providers marked in-network (`is_local`) — so a private
+    /// cloud-LLM endpoint (e.g. a private Azure OpenAI / Bedrock / Vertex endpoint)
+    /// is permitted while public APIs are blocked. Admin-toggleable unless locked.
+    air_gap: AtomicBool,
+    /// `BIFROST_AIR_GAP_LOCK=1`: forces air-gap on and refuses to disable it via the
+    /// API — for deployments where the UI must never relax the guarantee.
+    air_gap_locked: bool,
+}
+
+impl AppState {
+    /// The current runtime air-gap posture.
+    fn air_gap(&self) -> bool {
+        self.air_gap.load(Ordering::Relaxed)
+    }
+
+    /// Set the air-gap posture. Returns `Err` if disabling is attempted while
+    /// locked (the lock keeps a hard-air-gapped deployment from being relaxed).
+    fn set_air_gap(&self, enabled: bool) -> Result<(), ()> {
+        if self.air_gap_locked && !enabled {
+            return Err(());
+        }
+        self.air_gap.store(enabled, Ordering::Relaxed);
+        Ok(())
+    }
 }
 
 type Shared = Arc<AppState>;
@@ -99,6 +124,9 @@ async fn portfolio(
     Extension(caller): Extension<Identity>,
 ) -> Json<Portfolio> {
     let mut portfolio = state.portfolio.read().await.clone();
+    // The air-gap posture is runtime-toggleable (#190); reflect the current value
+    // rather than the audit-time snapshot so the header chip stays accurate.
+    portfolio.summary.air_gap = state.air_gap();
     // Overlay live review state so the portal's review queue reflects actions
     // taken this session: a converted pipeline shows its current proposal status,
     // and the latest audit event names who last acted and when. Only the caller's
@@ -239,7 +267,7 @@ async fn convert(
         .await
         .ok()
         .flatten();
-    let outcome = match run_conversion(&id, project.as_deref(), policy).await {
+    let outcome = match run_conversion(&id, project.as_deref(), policy, state.air_gap()).await {
         Ok(outcome) => {
             state.metrics.inc_conversion(true);
             outcome
@@ -884,10 +912,53 @@ async fn get_routing(
         .unwrap_or_else(RoutingPolicy::from_env);
     Ok(Json(serde_json::json!({
         "policy": policy,
-        // The air-gap flag is deployment-level; surfaced read-only for the editor.
-        "airGap": std::env::var("BIFROST_AIR_GAP")
+        // The runtime air-gap posture (#190), surfaced for the routing editor.
+        "airGap": state.air_gap(),
+    })))
+}
+
+/// `GET /api/settings` (#190) — control-plane settings the portal shows/edits.
+/// Air-gap here means "no public egress": the Router only uses providers marked
+/// in-network (`is_local`), so a private cloud-LLM endpoint is allowed while
+/// public APIs are blocked.
+async fn get_settings(State(state): State<Shared>) -> Json<Value> {
+    Json(json!({
+        "airGap": state.air_gap(),
+        "airGapLocked": state.air_gap_locked,
+        "live": std::env::var("BIFROST_CONVERT_LIVE")
             .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
             .unwrap_or(false),
+    }))
+}
+
+#[derive(Deserialize)]
+struct AirGapBody {
+    enabled: bool,
+}
+
+/// `PUT /api/settings/air-gap` (#190) — toggle the runtime air-gap posture.
+/// Admin-only (enforced by the middleware). 409 if the deployment locked air-gap
+/// on (`BIFROST_AIR_GAP_LOCK`). The change is recorded to the structured log.
+async fn set_air_gap_setting(
+    State(state): State<Shared>,
+    Extension(caller): Extension<Identity>,
+    Json(body): Json<AirGapBody>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    state.set_air_gap(body.enabled).map_err(|_| {
+        (
+            StatusCode::CONFLICT,
+            "air-gap is locked on for this deployment (BIFROST_AIR_GAP_LOCK)".to_string(),
+        )
+    })?;
+    tracing::info!(
+        actor = %caller.subject,
+        tenant = %caller.tenant,
+        air_gap = body.enabled,
+        "air-gap posture changed via API"
+    );
+    Ok(Json(json!({
+        "airGap": state.air_gap(),
+        "airGapLocked": state.air_gap_locked,
     })))
 }
 
@@ -1156,7 +1227,13 @@ async fn start_convert_job(
 
     let n = state.next_job.fetch_add(1, Ordering::Relaxed);
     let id = format!("job-{n}");
-    let job = jobs::spawn_convert_job(id.clone(), state.store.clone(), pairs, caller.tenant);
+    let job = jobs::spawn_convert_job(
+        id.clone(),
+        state.store.clone(),
+        pairs,
+        caller.tenant,
+        state.air_gap(),
+    );
     state.jobs.write().await.insert(id.clone(), job.clone());
     Json(json!({ "jobId": id, "total": job.total }))
 }
@@ -1224,6 +1301,7 @@ async fn run_conversion(
     pipeline_id: &str,
     project: Option<&str>,
     policy_override: Option<RoutingPolicy>,
+    air_gap: bool,
 ) -> Result<ConversionOutcome, bifrost_adapters::ConversionError> {
     use bifrost_adapters::{DockerImporter, Importer};
     use bifrost_llm::{
@@ -1235,10 +1313,8 @@ async fn run_conversion(
     let live = std::env::var("BIFROST_CONVERT_LIVE")
         .map(truthy)
         .unwrap_or(false);
-    let air_gap = live
-        && std::env::var("BIFROST_AIR_GAP")
-            .map(truthy)
-            .unwrap_or(false);
+    // Air-gap is the runtime posture (#190), gated on live mode.
+    let air_gap = live && air_gap;
 
     // Real providers, included only in live mode and when explicitly configured
     // (Ollama's `from_env` defaults its URL, so gate it on the var being set).
@@ -1368,6 +1444,8 @@ fn app(state: Shared) -> Router {
             axum::routing::delete(delete_connection),
         )
         .route("/api/routing", get(get_routing).put(put_routing))
+        .route("/api/settings", get(get_settings))
+        .route("/api/settings/air-gap", put(set_air_gap_setting))
         .route("/api/proposals/:id/runbook", patch(set_runbook_item))
         .route("/api/jobs/convert", post(start_convert_job))
         .route("/api/jobs/:id", get(job_status))
@@ -1400,6 +1478,10 @@ fn required_role(method: &axum::http::Method, path: &str) -> Role {
     // The org-wide compliance export and all connection/config management are
     // admin-only (sensitive, even to read).
     if path == "/api/audit-pack" || path.starts_with("/api/connections") || path == "/api/routing" {
+        return Role::Admin;
+    }
+    // Changing the air-gap posture is an admin action; reading settings is open.
+    if path.starts_with("/api/settings/") && *method != Method::GET {
         return Role::Admin;
     }
     match *method {
@@ -1559,6 +1641,15 @@ async fn main() -> anyhow::Result<()> {
         tracing_subscriber::fmt().with_env_filter(filter).init();
     }
 
+    // Air-gap posture (#190): default from BIFROST_AIR_GAP, optionally locked on.
+    let truthy = |v: String| matches!(v.as_str(), "1" | "true" | "yes");
+    let air_gap_default = std::env::var("BIFROST_AIR_GAP")
+        .map(truthy)
+        .unwrap_or(false);
+    let air_gap_locked = std::env::var("BIFROST_AIR_GAP_LOCK")
+        .map(truthy)
+        .unwrap_or(false);
+
     // Resolve the portfolio once at startup (a live audit may take a while).
     let (authn, auth_enabled) = auth::select_authenticator();
     let state: Shared = Arc::new(AppState {
@@ -1570,6 +1661,8 @@ async fn main() -> anyhow::Result<()> {
         auth_enabled,
         secrets: Arc::new(secrets::DefaultSecretResolver),
         metrics: metrics::Metrics::new(),
+        air_gap: AtomicBool::new(air_gap_default || air_gap_locked),
+        air_gap_locked,
     });
 
     let addr = std::env::var("BIFROST_API_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
@@ -1587,7 +1680,7 @@ mod tests {
 
     #[tokio::test]
     async fn conversion_helper_produces_a_draft_proposal_and_runbook() {
-        let outcome = run_conversion("SARC-main", None, None)
+        let outcome = run_conversion("SARC-main", None, None, false)
             .await
             .expect("offline conversion succeeds");
         assert_eq!(outcome.proposal.status, ProposalStatus::Draft);
@@ -1607,6 +1700,8 @@ mod tests {
             auth_enabled: false,
             secrets: Arc::new(secrets::DefaultSecretResolver),
             metrics: metrics::Metrics::new(),
+            air_gap: AtomicBool::new(false),
+            air_gap_locked: false,
         })
     }
 
@@ -2005,7 +2100,43 @@ mod tests {
             auth_enabled: true,
             secrets: Arc::new(secrets::DefaultSecretResolver),
             metrics: metrics::Metrics::new(),
+            air_gap: AtomicBool::new(false),
+            air_gap_locked: false,
         })
+    }
+
+    /// An auth-off state with air-gap locked on (BIFROST_AIR_GAP_LOCK).
+    fn locked_air_gap_state() -> Shared {
+        Arc::new(AppState {
+            portfolio: RwLock::new(sample::portfolio()),
+            store: Arc::new(store::InMemoryStore::default()),
+            jobs: RwLock::new(HashMap::new()),
+            next_job: AtomicU64::new(1),
+            auth: Arc::new(auth::MockAuthenticator::default()),
+            auth_enabled: false,
+            secrets: Arc::new(secrets::DefaultSecretResolver),
+            metrics: metrics::Metrics::new(),
+            air_gap: AtomicBool::new(true),
+            air_gap_locked: true,
+        })
+    }
+
+    #[test]
+    fn air_gap_toggles_unless_locked() {
+        let s = test_state();
+        assert!(!s.air_gap());
+        s.set_air_gap(true).unwrap();
+        assert!(s.air_gap(), "enabled");
+        s.set_air_gap(false).unwrap();
+        assert!(!s.air_gap(), "disabled");
+
+        // A locked deployment refuses to disable air-gap, and stays on.
+        let locked = locked_air_gap_state();
+        assert!(locked.air_gap());
+        assert!(locked.set_air_gap(false).is_err(), "cannot relax a lock");
+        assert!(locked.air_gap(), "still on after refused disable");
+        // Re-enabling a locked deployment is a no-op success.
+        assert!(locked.set_air_gap(true).is_ok());
     }
 
     async fn send(state: &Shared, method: &str, uri: &str, bearer: Option<&str>) -> StatusCode {
@@ -2048,6 +2179,41 @@ mod tests {
         let text = String::from_utf8_lossy(&body);
         assert!(text.contains("# TYPE bifrost_http_requests_total counter"));
         assert!(text.contains("bifrost_http_request_duration_ms_count"));
+    }
+
+    #[tokio::test]
+    async fn air_gap_setting_reads_open_but_toggles_admin_only() {
+        use tower::ServiceExt;
+        let state = enforced_state();
+        // Reading settings is open to a viewer.
+        assert_eq!(
+            send(&state, "GET", "/api/settings", Some("acme/viewer")).await,
+            StatusCode::OK
+        );
+
+        let put = |bearer: &str| {
+            Request::builder()
+                .method("PUT")
+                .uri("/api/settings/air-gap")
+                .header(
+                    axum::http::header::AUTHORIZATION,
+                    format!("Bearer {bearer}"),
+                )
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(r#"{"enabled":true}"#))
+                .unwrap()
+        };
+        // A viewer cannot change the posture.
+        let viewer = app(state.clone())
+            .oneshot(put("acme/viewer"))
+            .await
+            .unwrap();
+        assert_eq!(viewer.status(), StatusCode::FORBIDDEN);
+        assert!(!state.air_gap(), "unchanged after a forbidden attempt");
+        // An admin can.
+        let admin = app(state.clone()).oneshot(put("acme/admin")).await.unwrap();
+        assert_eq!(admin.status(), StatusCode::OK);
+        assert!(state.air_gap(), "admin toggle took effect");
     }
 
     #[tokio::test]

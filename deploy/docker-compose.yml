@@ -18,8 +18,11 @@ services:
       BIFROST_API_ADDR: 0.0.0.0:8080
       # SQLite file on the data volume; set to postgres://… for the server profile.
       BIFROST_DB: ${BIFROST_DB:-sqlite:/data/bifrost.db}
-      # Air-gap by default: frontier LLM providers disabled, no data leaves the box.
+      # Air-gap by default: only in-network (is_local) providers are used — public
+      # APIs blocked, a private cloud-LLM endpoint allowed. Runtime-toggleable in
+      # the portal (#190) unless BIFROST_AIR_GAP_LOCK=1 forces it on permanently.
       BIFROST_AIR_GAP: ${BIFROST_AIR_GAP:-1}
+      BIFROST_AIR_GAP_LOCK: ${BIFROST_AIR_GAP_LOCK:-}
       # LLM cost control (#104), both opt-in. Token budget caps total tokens per
       # conversion job; concurrency caps in-flight calls to frontier providers.
       BIFROST_TOKEN_BUDGET: ${BIFROST_TOKEN_BUDGET:-}

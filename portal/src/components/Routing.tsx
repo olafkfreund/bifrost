@@ -12,19 +12,35 @@ const KLASS: { key: Klass; title: string; hint: string }[] = [
 export function Routing({ api }: { api: BifrostApi }) {
   const [policy, setPolicy] = useState<RoutingPolicy | null>(null)
   const [airGap, setAirGap] = useState(false)
+  const [airGapLocked, setAirGapLocked] = useState(false)
+  const [togglingAirGap, setTogglingAirGap] = useState(false)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
-    api
-      .getRouting()
-      .then(({ policy, airGap }) => {
+    Promise.all([api.getRouting(), api.getSettings()])
+      .then(([{ policy }, settings]) => {
         setPolicy(policy)
-        setAirGap(airGap)
+        setAirGap(settings.airGap)
+        setAirGapLocked(settings.airGapLocked)
       })
       .catch((e) => setError(String(e)))
   }, [api])
+
+  async function toggleAirGap() {
+    setError(null)
+    setTogglingAirGap(true)
+    try {
+      const s = await api.setAirGap(!airGap)
+      setAirGap(s.airGap)
+      setAirGapLocked(s.airGapLocked)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setTogglingAirGap(false)
+    }
+  }
 
   function update(klass: Klass, csv: string) {
     if (!policy) return
@@ -63,12 +79,46 @@ export function Routing({ api }: { api: BifrostApi }) {
         provider wins. Comma-separated provider names (e.g. <code className="text-ink-100">ollama, anthropic</code>).
       </p>
 
-      {airGap && (
-        <div className="mt-4 rounded-lg border border-[var(--color-risk-amber)]/40 bg-[var(--color-risk-amber)]/10 px-4 py-2 text-sm text-[var(--color-risk-amber)]">
-          Air-gap mode is on — only <span className="font-medium">local</span> providers are used,
-          regardless of preference order. Frontier providers are blocked.
+      <div className="mt-4 rounded-xl border border-ink-800 bg-ink-900/40 p-4">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <div className="text-sm font-medium text-ink-100">Air-gap mode</div>
+            <p className="mt-0.5 text-xs text-ink-400">
+              No public egress: only providers marked <span className="font-medium">in-network</span>{' '}
+              (<code className="text-ink-300">is_local</code>) are used — a private cloud-LLM endpoint
+              (e.g. a private Azure OpenAI / Bedrock / Vertex endpoint) is allowed, public APIs are blocked.
+            </p>
+          </div>
+          <button
+            onClick={toggleAirGap}
+            disabled={togglingAirGap || airGapLocked}
+            aria-pressed={airGap}
+            title={airGapLocked ? 'Locked on by the deployment (BIFROST_AIR_GAP_LOCK)' : undefined}
+            className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition disabled:opacity-60 ${
+              airGap ? 'bg-[var(--color-risk-amber)]' : 'bg-ink-700'
+            }`}
+          >
+            <span
+              className={`inline-block h-5 w-5 transform rounded-full bg-ink-100 transition ${
+                airGap ? 'translate-x-5' : 'translate-x-0.5'
+              }`}
+            />
+          </button>
         </div>
-      )}
+        <div className="mt-2 text-xs">
+          {airGapLocked ? (
+            <span className="text-[var(--color-risk-amber)]">
+              Locked on by the deployment — cannot be disabled here.
+            </span>
+          ) : airGap ? (
+            <span className="text-[var(--color-risk-amber)]">
+              On — frontier (public-API) providers are blocked regardless of preference order.
+            </span>
+          ) : (
+            <span className="text-ink-400">Off — all configured providers are eligible.</span>
+          )}
+        </div>
+      </div>
       {error && (
         <div className="mt-4 rounded-lg border border-[var(--color-risk-red)]/40 bg-[var(--color-risk-red)]/10 px-4 py-2 text-sm text-[var(--color-risk-red)]">
           {error}
