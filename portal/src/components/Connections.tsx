@@ -23,15 +23,50 @@ const SOURCE_PLATFORMS: { id: string; label: string; urlLabel: string; needsUser
   { id: 'bamboo', label: 'Bamboo', urlLabel: 'Server URL', needsUser: false },
 ]
 
-// Vault/identity references first; the inline (encrypted) secret is the labelled
-// fallback and is deliberately last + warned.
+// Vault/identity references first; pasting the key/token directly (encrypted at
+// rest) is the simple option for getting started without a vault.
 const AUTH_LABEL: Record<AuthMethod, string> = {
   'key-vault': 'Azure Key Vault reference (recommended)',
   'github-app': 'GitHub App installation',
   'entra-wif': 'Entra workload identity',
   'env-var': 'Environment variable',
-  inline: 'Inline secret (encrypted) — fallback',
+  inline: 'Paste key / token (encrypted at rest)',
 }
+
+// LLM providers: hosted frontier providers need only a key; the configurable /
+// local ones also take a base URL and an air-gap flag. `keyHint` explains what
+// the "key" is for each.
+const LLM_PROVIDERS: Record<string, { label: string; hosted: boolean; keyHint: string }> = {
+  anthropic: { label: 'Anthropic (Claude)', hosted: true, keyHint: 'Your Anthropic API key (sk-ant-…).' },
+  gemini: { label: 'Google Gemini (AI Studio)', hosted: true, keyHint: 'Your Google AI Studio API key.' },
+  'github-models': {
+    label: 'GitHub Copilot / Models',
+    hosted: true,
+    keyHint: 'A GitHub token with the models scope (your Copilot/Models subscription).',
+  },
+  'openai-compatible': {
+    label: 'OpenAI-compatible (vLLM, LiteLLM, Azure OpenAI, Bedrock gateway…)',
+    hosted: false,
+    keyHint: 'The gateway/API key, if the endpoint requires one (local servers often don’t).',
+  },
+  ollama: { label: 'Ollama (local)', hosted: false, keyHint: 'Usually none — Ollama is keyless.' },
+}
+
+// Known, ready-to-use model ids per provider for the model picker. The
+// configurable/local providers (openai-compatible, ollama) are deployment-
+// specific, so they stay free-text. "Custom…" lets you type any id.
+const LLM_MODELS: Record<string, string[]> = {
+  anthropic: [
+    'claude-opus-4-8',
+    'claude-sonnet-4-6',
+    'claude-haiku-4-5',
+    'claude-opus-4-7',
+    'claude-opus-4-6',
+  ],
+  gemini: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'],
+  'github-models': ['gpt-4o', 'gpt-4o-mini', 'o1', 'o1-mini', 'llama-3.3-70b-instruct'],
+}
+const CUSTOM_MODEL = '__custom'
 
 function authSummary(ref?: SecretRefView): string {
   if (!ref) return '—'
@@ -63,7 +98,6 @@ export function Connections({ api }: { api: BifrostApi }) {
   const [model, setModel] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
   const [isLocal, setIsLocal] = useState(true)
-  const [residency, setResidency] = useState('')
   const [platform, setPlatform] = useState('jenkins')
   const [username, setUsername] = useState('')
   const [authMethod, setAuthMethod] = useState<AuthMethod>('key-vault')
@@ -77,6 +111,13 @@ export function Connections({ api }: { api: BifrostApi }) {
       .catch((e) => setError(String(e)))
   }
   useEffect(load, [api])
+
+  // Switch provider and default to its first known model (clearing it for the
+  // deployment-specific providers).
+  function selectProvider(p: string) {
+    setProvider(p)
+    setModel(LLM_MODELS[p]?.[0] ?? '')
+  }
 
   function buildAuth(): Record<string, unknown> {
     switch (authMethod) {
@@ -119,7 +160,6 @@ export function Connections({ api }: { api: BifrostApi }) {
           model,
           base_url: baseUrl || undefined,
           is_local: isLocal,
-          residency: residency || undefined,
           key: authMethod === 'env-var' && !authValue ? undefined : auth,
         }
       await api.createConnection(input)
@@ -285,38 +325,82 @@ export function Connections({ api }: { api: BifrostApi }) {
                 </>
               )
             })()}
-          {kind === 'llm' && (
-            <>
-              <div>
-                <label className={label}>Provider</label>
-                <select className={input} value={provider} onChange={(e) => setProvider(e.target.value)}>
-                  {['openai-compatible', 'anthropic', 'gemini', 'github-models', 'ollama'].map((p) => (
-                    <option key={p} value={p}>
-                      {p}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className={label}>Model</label>
-                <input className={input} value={model} onChange={(e) => setModel(e.target.value)} required placeholder="gemma-2-12b" />
-              </div>
-              <div>
-                <label className={label}>Base URL (optional)</label>
-                <input className={input} value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="http://gemma.vm.internal:8000/v1" />
-              </div>
-              <div>
-                <label className={label}>Data residency (optional)</label>
-                <input className={input} value={residency} onChange={(e) => setResidency(e.target.value)} placeholder="eu / on-prem" />
-              </div>
-              <label className="flex items-center gap-2 text-sm text-ink-200 sm:col-span-2">
-                <input type="checkbox" checked={isLocal} onChange={(e) => setIsLocal(e.target.checked)} />
-                Runs on infrastructure we control (air-gap eligible)
-              </label>
-            </>
-          )}
+          {kind === 'llm' &&
+            (() => {
+              const spec = LLM_PROVIDERS[provider] ?? LLM_PROVIDERS['anthropic']
+              return (
+                <>
+                  <div>
+                    <label className={label}>Provider</label>
+                    <select className={input} value={provider} onChange={(e) => selectProvider(e.target.value)}>
+                      {Object.entries(LLM_PROVIDERS).map(([id, p]) => (
+                        <option key={id} value={id}>
+                          {p.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className={label}>Model</label>
+                    {LLM_MODELS[provider] ? (
+                      <>
+                        <select
+                          className={input}
+                          value={LLM_MODELS[provider].includes(model) ? model : CUSTOM_MODEL}
+                          onChange={(e) => setModel(e.target.value === CUSTOM_MODEL ? '' : e.target.value)}
+                        >
+                          {LLM_MODELS[provider].map((m) => (
+                            <option key={m} value={m}>
+                              {m}
+                            </option>
+                          ))}
+                          <option value={CUSTOM_MODEL}>Custom…</option>
+                        </select>
+                        {!LLM_MODELS[provider].includes(model) && (
+                          <input
+                            className={`${input} mt-2`}
+                            value={model}
+                            onChange={(e) => setModel(e.target.value)}
+                            required
+                            placeholder="model id"
+                          />
+                        )}
+                      </>
+                    ) : (
+                      <input
+                        className={input}
+                        value={model}
+                        onChange={(e) => setModel(e.target.value)}
+                        required
+                        placeholder="gemma-2-12b"
+                      />
+                    )}
+                  </div>
+                  {/* Base URL + air-gap only apply to configurable/local endpoints. */}
+                  {!spec.hosted && (
+                    <>
+                      <div className="sm:col-span-2">
+                        <label className={label}>
+                          {provider === 'ollama' ? 'Ollama base URL' : 'Base URL (the endpoint, incl. /v1)'}
+                        </label>
+                        <input
+                          className={input}
+                          value={baseUrl}
+                          onChange={(e) => setBaseUrl(e.target.value)}
+                          placeholder="http://gemma.vm.internal:8000/v1"
+                        />
+                      </div>
+                      <label className="flex items-center gap-2 text-sm text-ink-200 sm:col-span-2">
+                        <input type="checkbox" checked={isLocal} onChange={(e) => setIsLocal(e.target.checked)} />
+                        In-network endpoint (air-gap eligible — usable when air-gap is on)
+                      </label>
+                    </>
+                  )}
+                </>
+              )
+            })()}
 
-          {/* Auth — references first, inline last */}
+          {/* Auth — references first; "Paste key / token" is the no-vault option. */}
           <div>
             <label className={label}>{kind === 'llm' ? 'API key' : 'Authentication'}</label>
             <select className={input} value={authMethod} onChange={(e) => setAuthMethod(e.target.value as AuthMethod)}>
@@ -326,6 +410,12 @@ export function Connections({ api }: { api: BifrostApi }) {
                 </option>
               ))}
             </select>
+            {kind === 'llm' && (
+              <p className="mt-1 text-xs text-ink-400">
+                {LLM_PROVIDERS[provider]?.keyHint} To paste it directly, choose{' '}
+                <span className="text-ink-200">Paste key / token</span>.
+              </p>
+            )}
           </div>
           <div>
             <label className={label}>
@@ -337,7 +427,9 @@ export function Connections({ api }: { api: BifrostApi }) {
                     ? 'Tenant id'
                     : authMethod === 'env-var'
                       ? 'Environment variable name'
-                      : 'Secret value (encrypted at rest)'}
+                      : kind === 'llm' || kind === 'source'
+                        ? 'API key / token (encrypted at rest)'
+                        : 'Secret value (encrypted at rest)'}
             </label>
             <input
               className={input}
