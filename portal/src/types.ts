@@ -248,6 +248,15 @@ export interface SourceStats {
   uncollected: string[]
 }
 
+/** Per-project repo + pipeline coordination (#245). */
+export interface ProjectCoordination {
+  project: string
+  pipelines: number
+  pipelinesDone: number
+  /** Repo migration (GEI) status — `pendingInventory` until an inventory runs. */
+  repoStatus: 'pendingInventory'
+}
+
 /** One migration wave with its cohort facts + progress (#242). */
 export interface WavePlan {
   wave: number

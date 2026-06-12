@@ -7,6 +7,7 @@ import type {
   JobProgress,
   Pipeline,
   Portfolio,
+  ProjectCoordination,
   ProposalStatus,
   ReadinessItem,
   SecretRefView,
@@ -57,6 +58,8 @@ export interface BifrostApi {
   getForecast(): Promise<Forecast>
   /** Wave/cohort program plan (#242). */
   getProgram(): Promise<WavePlan[]>
+  /** Per-project repo + pipeline coordination (#245). */
+  getGeiCoordination(): Promise<ProjectCoordination[]>
   /** The `.github/copilot-instructions.md` for migrated repos (#243). */
   getAgentInstructions(): Promise<string>
   /** Source (Azure DevOps) assessment statistics (#240). */
@@ -383,6 +386,19 @@ class MockBifrostApi implements BifrostApi {
       maxJobMinutes: 38.0,
     }
     return f
+  }
+  async getGeiCoordination(): Promise<ProjectCoordination[]> {
+    const isDone = new Set(['approved', 'committed', 'validated'])
+    const byMap = new Map<string, { pipelines: number; pipelinesDone: number }>()
+    for (const p of mockPortfolio.pipelines.map((x) => this.overlay(x))) {
+      const c = byMap.get(p.project) ?? { pipelines: 0, pipelinesDone: 0 }
+      c.pipelines += 1
+      if (isDone.has(p.status)) c.pipelinesDone += 1
+      byMap.set(p.project, c)
+    }
+    return [...byMap.entries()]
+      .map(([project, v]) => ({ project, ...v, repoStatus: 'pendingInventory' as const }))
+      .sort((a, b) => b.pipelines - a.pipelines || a.project.localeCompare(b.project))
   }
   async getAgentInstructions(): Promise<string> {
     return (
@@ -794,6 +810,11 @@ class HttpBifrostApi implements BifrostApi {
     const res = await fetch(`${this.base}/program`, { headers: this.headers() })
     if (!res.ok) throw new Error(`program request failed: ${res.status}`)
     return (await res.json()) as WavePlan[]
+  }
+  async getGeiCoordination(): Promise<ProjectCoordination[]> {
+    const res = await fetch(`${this.base}/gei`, { headers: this.headers() })
+    if (!res.ok) throw new Error(`gei request failed: ${res.status}`)
+    return (await res.json()) as ProjectCoordination[]
   }
   async getAgentInstructions(): Promise<string> {
     const res = await fetch(`${this.base}/copilot-instructions`, { headers: this.headers() })

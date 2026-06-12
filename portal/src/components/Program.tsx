@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { BifrostApi } from '../api/client'
-import type { WavePlan } from '../types'
+import type { ProjectCoordination, WavePlan } from '../types'
 
 const num = (n: number) => n.toLocaleString()
 
@@ -20,10 +20,12 @@ function Progress({ done, inProgress, notStarted }: { done: number; inProgress: 
 
 export function Program({ api }: { api: BifrostApi }) {
   const [waves, setWaves] = useState<WavePlan[] | null>(null)
+  const [coord, setCoord] = useState<ProjectCoordination[] | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     api.getProgram().then(setWaves).catch((e) => setError(String(e)))
+    api.getGeiCoordination().then(setCoord).catch((e) => setError(String(e)))
   }, [api])
 
   if (error) {
@@ -125,6 +127,48 @@ export function Program({ api }: { api: BifrostApi }) {
         · Waves are assigned deterministically by difficulty (classification + risk). Pilot = green YAML; the hard
         tail = classic or red. Sequence the program pilot-first.
       </p>
+
+      {/* Repos + pipelines as one program, per project (#245) */}
+      {coord && coord.length > 0 && (
+        <div className="mt-8">
+          <h2 className="text-sm font-semibold text-ink-100">Repos and pipelines, by project</h2>
+          <p className="mb-3 mt-0.5 text-xs text-ink-300">
+            A migration is two tools run as one program — repositories via GEI, pipelines via the Importer. Pipeline
+            progress is tracked here; repo migration needs a GEI inventory (<span className="font-mono">ado2gh inventory-report</span>).
+          </p>
+          <div className="bf-card overflow-hidden rounded-xl">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-ink-800 text-left text-xs uppercase tracking-wide text-ink-300">
+                  <th className="px-4 py-2.5 font-medium">Project</th>
+                  <th className="px-4 py-2.5 text-right font-medium">Pipelines</th>
+                  <th className="px-4 py-2.5 text-right font-medium">Pipelines done</th>
+                  <th className="px-4 py-2.5 font-medium">Repos (GEI)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {coord.map((c) => (
+                  <tr key={c.project} className="border-b border-ink-800 last:border-0">
+                    <td className="px-4 py-2.5 text-ink-100">{c.project}</td>
+                    <td className="tnum px-4 py-2.5 text-right text-ink-300">{num(c.pipelines)}</td>
+                    <td className="tnum px-4 py-2.5 text-right text-[var(--color-risk-green)]">{num(c.pipelinesDone)}</td>
+                    <td className="px-4 py-2.5">
+                      <span
+                        className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium"
+                        style={{ color: 'var(--color-ink-300)' }}
+                        title="Run ado2gh inventory-report to inventory repos (size vs the 40 GiB / 400 MiB GEI limits, PR counts)"
+                      >
+                        <span className="h-1.5 w-1.5 rounded-full bg-ink-500" />
+                        Inventory pending
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </main>
   )
 }
