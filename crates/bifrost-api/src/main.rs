@@ -451,6 +451,21 @@ struct EditBody {
 /// Replace a proposal's workflow with a reviewer edit, recording it.
 ///
 /// 404 if unknown; 409 if the proposal is past approval (frozen).
+/// `GET /api/proposals/:id` — the stored proposal record (proposal + runbook +
+/// audit). Read-only; role + tenant ownership are enforced by the middleware.
+async fn get_proposal(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let rec = state
+        .store
+        .get(&id)
+        .await
+        .map_err(internal)?
+        .ok_or((StatusCode::NOT_FOUND, format!("no proposal '{id}'")))?;
+    Ok(Json(record_json(&rec)))
+}
+
 async fn edit(
     State(state): State<Shared>,
     Path(id): Path<String>,
@@ -2035,7 +2050,7 @@ fn app(state: Shared) -> Router {
         .route("/api/refresh", post(refresh))
         .route("/api/pipelines/:id/convert", post(convert))
         .route("/api/proposals/:id/transition", post(transition))
-        .route("/api/proposals/:id", patch(edit))
+        .route("/api/proposals/:id", get(get_proposal).patch(edit))
         .route("/api/proposals/:id/commit", post(commit))
         .route("/api/proposals/:id/validate", post(validate))
         .route("/api/proposals/:id/run", get(run_result))

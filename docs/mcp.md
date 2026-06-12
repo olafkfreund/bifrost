@@ -36,8 +36,10 @@ the portal uses.
 
 ## Tools available today
 
-The server is **read-only** today by design: it gives an assistant full situational
-awareness without the power to change anything. Every tool is a deterministic read.
+### Read-only context
+
+These give an assistant full situational awareness without the power to change anything.
+Every one is a deterministic read.
 
 | Tool | What it answers |
 |------|-----------------|
@@ -50,10 +52,22 @@ awareness without the power to change anything. Every tool is a deterministic re
 | `bifrost_report` | The pre-migration status report (Markdown), optionally scoped to one project. |
 | `validate_workflow` | A quick structural sanity check on a workflow YAML (has `on:` and `jobs:`). Local; no API call. |
 
+### Lifecycle (review-first)
+
+These move a pipeline along the migration, each grounded in the same review-first engine the
+portal uses. None of them merges anything: `convert` and `runbook` produce/read a *proposal*,
+and `commit` is gated three ways (see below).
+
+| Tool | What it does |
+|------|--------------|
+| `bifrost_convert` | Convert a pipeline to a **proposed** GitHub workflow (Importer dry-run + grounded gap-fill). Returns a Proposal + Runbook. Idempotent. Never commits or opens a PR. |
+| `bifrost_runbook` | Read a proposal's manual-task checklist — secrets to create, service connections to federate via OIDC, runners to label — each with required/done state. Read-only. |
+| `bifrost_commit` | Open the PR for an **approved** proposal. Disabled unless `BIFROST_MCP_COMMIT=1`; the proposal must already be approved in the portal; a real PR only with `BIFROST_COMMIT_LIVE` (else a mock URL). |
+
 {: .note }
-> Read-only is a feature, not a limitation. An assistant can plan, explain, prioritise and
-> report all day without ever touching production CI. Writes (convert, commit, PR) stay on
-> the gated path described below.
+> The context tools never touch production CI. The lifecycle tools stay review-first: an
+> assistant can take you from legacy YAML to a reviewed, approved, committed workflow, but
+> **approval is always a human decision made in the portal** — never from the editor.
 
 ---
 
@@ -170,6 +184,31 @@ opening the pull request stays a separate, explicitly-approved step
 > manual follow-ups spelled out — without a hallucinated rewrite, because Bifrost wraps the
 > official tool and explains the diff.
 
+### Reviewing and committing from the editor
+
+Once a workflow is proposed, two more tools close the loop:
+
+- **`bifrost_runbook { pipelineId }`** reads the proposal's manual-task checklist — the
+  things the Importer cannot do for you (create secrets, federate service connections via
+  OIDC, label self-hosted runners), each flagged required/optional and done/outstanding. An
+  assistant can walk you through them, or generate the `gh` commands to resolve them.
+- **`bifrost_commit { pipelineId }`** opens the pull request for an **approved** proposal.
+  It is gated three ways, so an agent can never open a PR on its own:
+
+  1. **Tool opt-in.** Disabled unless the server is started with `BIFROST_MCP_COMMIT=1`. By
+     default the tool refuses and tells you how to enable it.
+  2. **Human approval.** The proposal must already be `approved` — a decision made by a
+     person in the review portal. The API rejects a commit in any other state, and there is
+     no MCP tool that approves; the editor cannot self-approve.
+  3. **Live write.** Even when committing, a *real* GitHub PR is opened only if the control
+     plane runs with `BIFROST_COMMIT_LIVE`; otherwise a mock PR URL is returned. So you can
+     rehearse the whole flow with zero external effect.
+
+{: .note }
+> The default posture opens no pull requests and makes no GitHub write. Enabling
+> `bifrost_commit` is a deliberate operator choice, and even then it only acts on work a
+> human has already approved.
+
 ---
 
 ## How far does the automation go?
@@ -205,8 +244,8 @@ tools the team already uses.
 | Read-only context tools (portfolio, assessment, coverage, forecast, readiness, program board, report) | Shipped |
 | `validate_workflow` structural check | Shipped |
 | `bifrost_convert` — convert a pipeline to a proposed workflow from the editor | Shipped (wraps the review-first `/convert` endpoint) |
-| `bifrost_runbook` — read a proposal's manual-task checklist | Planned |
-| Gated `bifrost_commit` — open the PR after approval | Planned (approval + live-flag gated) |
+| `bifrost_runbook` — read a proposal's manual-task checklist | Shipped |
+| Gated `bifrost_commit` — open the PR after approval | Shipped (triple-gated, see below) |
 
 The engine is built; extending the editor surface is mostly exposing it through MCP, one
 review-first tool at a time.
