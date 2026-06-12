@@ -1,0 +1,4 @@
+{ "results": [
+  { "key": "ARTIFACT_REPO", "value": "https://nexus.example.com", "sensitive": false },
+  { "key": "SIGNING_KEY", "sensitive": true }
+] }

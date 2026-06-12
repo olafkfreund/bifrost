@@ -19,7 +19,7 @@
 //!   the serialized shape could carry a secret value.
 
 use bifrost_adapters::source::{AdapterError, SourceAdapter};
-use bifrost_adapters::{bitbucket, circleci, gitlab, jenkins, travis, MockSourceAdapter};
+use bifrost_adapters::{bamboo, bitbucket, circleci, gitlab, jenkins, travis, MockSourceAdapter};
 use bifrost_core::Classification;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -273,7 +273,28 @@ async fn circleci_is_conformant() {
     assert_conformance("circleci", &circleci_subject()).await;
 }
 
+fn bamboo_subject() -> MockSourceAdapter {
+    let projects: Value =
+        serde_json::from_str(include_str!("../../../fixtures/bamboo/projects.json")).unwrap();
+    let plans: Value =
+        serde_json::from_str(include_str!("../../../fixtures/bamboo/plans.json")).unwrap();
+    let vars: Value =
+        serde_json::from_str(include_str!("../../../fixtures/bamboo/variables.json")).unwrap();
+    MockSourceAdapter {
+        projects: bamboo::parse_projects(&projects),
+        pipelines: bamboo::parse_plans(&plans),
+        service_connections: Vec::new(),
+        variable_groups: vec![bamboo::parse_variables(&vars, "PLAT-WEB")],
+        tasks: Vec::new(),
+    }
+}
+
 #[tokio::test]
 async fn travis_is_conformant() {
     assert_conformance("travis", &travis_subject()).await;
+}
+
+#[tokio::test]
+async fn bamboo_is_conformant() {
+    assert_conformance("bamboo", &bamboo_subject()).await;
 }

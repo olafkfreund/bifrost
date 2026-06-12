@@ -6,6 +6,7 @@
 
 pub mod ado_auth;
 pub mod azure_devops;
+pub mod bamboo;
 pub mod baseline;
 pub mod bitbucket;
 pub mod circleci;
@@ -27,6 +28,7 @@ mod test_fixtures;
 
 pub use ado_auth::{AdoAuth, EntraAuth, PatAuth};
 pub use azure_devops::AzureDevOpsAdapter;
+pub use bamboo::BambooAdapter;
 pub use baseline::{
     AzureDevOpsBaseline, BaselineError, BaselineRequest, BaselineSource, MockBaselineSource,
 };
