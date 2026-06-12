@@ -38,6 +38,18 @@ export interface BifrostApi {
   /** LLM routing policy (#158) — Admin-only, per-tenant. */
   getRouting(): Promise<{ policy: RoutingPolicy; airGap: boolean }>
   putRouting(policy: RoutingPolicy): Promise<void>
+  /** Control-plane settings (#190). */
+  getSettings(): Promise<Settings>
+  /** Toggle the runtime air-gap posture (Admin-only). */
+  setAirGap(enabled: boolean): Promise<Settings>
+}
+
+/** Control-plane settings surfaced to the portal (#190). */
+export interface Settings {
+  airGap: boolean
+  /** Locked on by the deployment (BIFROST_AIR_GAP_LOCK) — toggle disabled. */
+  airGapLocked: boolean
+  live: boolean
 }
 
 /** Ordered provider-name preference per task class (mirrors bifrost-llm). */
@@ -282,6 +294,14 @@ class MockBifrostApi implements BifrostApi {
   async putRouting(policy: RoutingPolicy): Promise<void> {
     this.routing = policy
   }
+  private airGap = false
+  async getSettings(): Promise<Settings> {
+    return { airGap: this.airGap, airGapLocked: false, live: false }
+  }
+  async setAirGap(enabled: boolean): Promise<Settings> {
+    this.airGap = enabled
+    return { airGap: enabled, airGapLocked: false, live: false }
+  }
 }
 
 /** Redact a create-input into a list-view kind (drops any inline plaintext). */
@@ -454,6 +474,20 @@ class HttpBifrostApi implements BifrostApi {
       body: JSON.stringify(policy),
     })
     if (!res.ok) throw new Error(`${res.status}: ${(await res.text()) || 'save failed'}`)
+  }
+  async getSettings(): Promise<Settings> {
+    const res = await fetch(`${this.base}/settings`, { headers: this.headers() })
+    if (!res.ok) throw new Error(`settings request failed: ${res.status}`)
+    return (await res.json()) as Settings
+  }
+  async setAirGap(enabled: boolean): Promise<Settings> {
+    const res = await fetch(`${this.base}/settings/air-gap`, {
+      method: 'PUT',
+      headers: this.headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ enabled }),
+    })
+    if (!res.ok) throw new Error(`${res.status}: ${(await res.text()) || 'toggle failed'}`)
+    return (await res.json()) as Settings
   }
 }
 
