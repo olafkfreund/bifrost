@@ -104,6 +104,30 @@ impl LlmProvider for CopilotProvider {
         }
         parse_gap_fill(&answer)
     }
+
+    async fn chat(&self, prompt: &str) -> Result<String, LlmError> {
+        let body = ChatRequest {
+            model: &self.model,
+            messages: vec![ChatMessage {
+                role: "user",
+                content: prompt,
+            }],
+        };
+        let text = crate::http_text_with_retry("github-models", || {
+            self.client
+                .post(self.endpoint())
+                .bearer_auth(&self.token)
+                .json(&body)
+        })
+        .await?;
+        let parsed: ChatResponse = serde_json::from_str(&text)
+            .map_err(|e| LlmError::Parse(format!("response envelope: {e}: {text}")))?;
+        let answer = parsed.text();
+        if answer.is_empty() {
+            return Err(LlmError::Parse(format!("no message content: {text}")));
+        }
+        Ok(answer)
+    }
 }
 
 // --- OpenAI-compatible chat-completions wire types (only the fields we use) ---

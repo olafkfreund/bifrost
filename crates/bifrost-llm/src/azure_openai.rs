@@ -147,6 +147,33 @@ impl LlmProvider for AzureOpenAiProvider {
         }
         parse_gap_fill(&answer)
     }
+
+    async fn chat(&self, prompt: &str) -> Result<String, LlmError> {
+        let body = ChatRequest {
+            model: &self.deployment,
+            messages: vec![ChatMessage {
+                role: "user",
+                content: prompt,
+            }],
+        };
+        let text = crate::http_text_with_retry("azure-openai", || {
+            let mut request = self.client.post(self.endpoint_url()).json(&body);
+            if let Some(key) = &self.api_key {
+                request = request.header("api-key", key);
+            } else if let Some(token) = &self.token {
+                request = request.bearer_auth(token);
+            }
+            request
+        })
+        .await?;
+        let parsed: ChatResponse = serde_json::from_str(&text)
+            .map_err(|e| LlmError::Parse(format!("response envelope: {e}: {text}")))?;
+        let answer = parsed.text();
+        if answer.is_empty() {
+            return Err(LlmError::Parse(format!("no message content: {text}")));
+        }
+        Ok(answer)
+    }
 }
 
 // --- OpenAI chat-completions wire types (only the fields we use) ---

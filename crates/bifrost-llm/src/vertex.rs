@@ -116,6 +116,28 @@ impl LlmProvider for VertexProvider {
         }
         parse_gap_fill(&answer)
     }
+
+    async fn chat(&self, prompt: &str) -> Result<String, LlmError> {
+        let body = GenerateRequest {
+            contents: vec![Content {
+                parts: vec![Part { text: prompt }],
+            }],
+        };
+        let text = crate::http_text_with_retry("vertex", || {
+            self.client
+                .post(self.endpoint())
+                .bearer_auth(&self.token)
+                .json(&body)
+        })
+        .await?;
+        let parsed: GenerateResponse = serde_json::from_str(&text)
+            .map_err(|e| LlmError::Parse(format!("response envelope: {e}: {text}")))?;
+        let answer = parsed.text();
+        if answer.is_empty() {
+            return Err(LlmError::Parse(format!("no text in response: {text}")));
+        }
+        Ok(answer)
+    }
 }
 
 // --- Vertex generateContent wire types (shared shape with AI-Studio Gemini) ---

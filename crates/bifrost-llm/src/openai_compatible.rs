@@ -109,6 +109,31 @@ impl LlmProvider for OpenAiCompatibleProvider {
         }
         parse_gap_fill(&answer)
     }
+
+    async fn chat(&self, prompt: &str) -> Result<String, LlmError> {
+        let body = ChatRequest {
+            model: &self.model,
+            messages: vec![ChatMessage {
+                role: "user",
+                content: prompt,
+            }],
+        };
+        let text = crate::http_text_with_retry("openai-compatible", || {
+            let mut request = self.client.post(self.endpoint()).json(&body);
+            if let Some(key) = &self.key {
+                request = request.bearer_auth(key);
+            }
+            request
+        })
+        .await?;
+        let parsed: ChatResponse = serde_json::from_str(&text)
+            .map_err(|e| LlmError::Parse(format!("response envelope: {e}: {text}")))?;
+        let answer = parsed.text();
+        if answer.is_empty() {
+            return Err(LlmError::Parse(format!("no message content: {text}")));
+        }
+        Ok(answer)
+    }
 }
 
 // --- OpenAI-compatible chat-completions wire types (only the fields we use) ---
