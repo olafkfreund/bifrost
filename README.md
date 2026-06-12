@@ -49,7 +49,8 @@ PORTAL (React/TS)           portfolio heatmap · 3-pane diff · approve/edit · 
       │ REST/SSE
 CONTROL PLANE (Rust/axum)   job state machine · conversion orchestrator ·
       │                     deterministic risk model · attestation + audit log
-      │ LlmProvider trait → Anthropic · Gemini · Copilot/Models · Ollama (air-gap)
+      │ LlmProvider trait → Anthropic · Gemini · Copilot/Models · Azure OpenAI ·
+      │                     Vertex AI · Bedrock (gateway) · OpenAI-compat · Ollama (air-gap)
       ▼ shell-out (Docker)            ▼ HTTP
 INGESTION ADAPTERS          EXTERNAL: ADO REST API · GitHub API · GEI
   gh actions-importer (Docker) · SourceAdapter trait (ADO → …)
