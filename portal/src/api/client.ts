@@ -46,6 +46,8 @@ export interface BifrostApi {
   getProviders(): Promise<ProvidersView>
   /** The pre-migration status report as Markdown (#204) — read-only assessment. */
   getReport(): Promise<string>
+  /** The status report as a PDF blob (#221), optionally scoped to a project. */
+  getReportPdf(project?: string): Promise<Blob>
 }
 
 /** One LLM provider in the routing catalog (#197). */
@@ -345,6 +347,9 @@ class MockBifrostApi implements BifrostApi {
   async getReport(): Promise<string> {
     return '# Migration Status Report\n\n> This is a pre-migration assessment. No changes have been made.\n'
   }
+  async getReportPdf(): Promise<Blob> {
+    return new Blob(['%PDF-1.5 (mock)'], { type: 'application/pdf' })
+  }
 }
 
 /** Redact a create-input into a list-view kind (drops any inline plaintext). */
@@ -541,6 +546,12 @@ class HttpBifrostApi implements BifrostApi {
     const res = await fetch(`${this.base}/report`, { headers: this.headers() })
     if (!res.ok) throw new Error(`report request failed: ${res.status}`)
     return await res.text()
+  }
+  async getReportPdf(project?: string): Promise<Blob> {
+    const q = project ? `?project=${encodeURIComponent(project)}` : ''
+    const res = await fetch(`${this.base}/report.pdf${q}`, { headers: this.headers() })
+    if (!res.ok) throw new Error(`report PDF request failed: ${res.status}`)
+    return await res.blob()
   }
 }
 

@@ -21,6 +21,16 @@ type View = 'heatmap' | 'table'
 type Filter = RiskBand | 'all'
 type Page = 'portfolio' | 'review' | 'connections' | 'routing' | 'docs'
 
+/** Trigger a browser download of a blob with the given filename. */
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 export default function App() {
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -141,27 +151,34 @@ export default function App() {
                 ))}
               </div>
 
-              {/* pre-migration status report (#204) — review before any change */}
-              <button
-                onClick={() => {
-                  api
-                    .getReport()
-                    .then((md) => {
-                      const blob = new Blob([md], { type: 'text/markdown' })
-                      const url = URL.createObjectURL(blob)
-                      const a = document.createElement('a')
-                      a.href = url
-                      a.download = 'migration-status-report.md'
-                      a.click()
-                      URL.revokeObjectURL(url)
-                    })
-                    .catch((e) => setError(String(e)))
-                }}
-                title="Download a pre-migration status report — review before any change"
-                className="rounded-lg border border-ink-800 px-3 py-1.5 text-xs text-ink-200 transition hover:border-ink-600 hover:text-ink-100"
-              >
-                Status report
-              </button>
+              {/* pre-migration status report (#204/#220/#221) — review before any change */}
+              <div className="flex overflow-hidden rounded-lg border border-ink-800 text-xs">
+                <span className="px-2 py-1.5 text-ink-400">Report</span>
+                <button
+                  onClick={() => {
+                    api
+                      .getReport()
+                      .then((md) => downloadBlob(new Blob([md], { type: 'text/markdown' }), 'migration-status-report.md'))
+                      .catch((e) => setError(String(e)))
+                  }}
+                  title="Download the pre-migration status report (Markdown)"
+                  className="border-l border-ink-800 px-3 py-1.5 text-ink-200 transition hover:bg-ink-850 hover:text-ink-100"
+                >
+                  .md
+                </button>
+                <button
+                  onClick={() => {
+                    api
+                      .getReportPdf()
+                      .then((pdf) => downloadBlob(pdf, 'migration-status-report.pdf'))
+                      .catch((e) => setError(String(e)))
+                  }}
+                  title="Download the pre-migration status report (PDF) for the change board"
+                  className="border-l border-ink-800 px-3 py-1.5 text-ink-200 transition hover:bg-ink-850 hover:text-ink-100"
+                >
+                  .pdf
+                </button>
+              </div>
             </div>
           </div>
 
