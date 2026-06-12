@@ -2,14 +2,26 @@ import { useEffect, useState } from 'react'
 import type { BifrostApi, ConnectionInput } from '../api/client'
 import type { ConnectionView, SecretRefView } from '../types'
 
-type Kind = 'azure-devops' | 'github' | 'llm'
+type Kind = 'azure-devops' | 'github' | 'llm' | 'source'
 type AuthMethod = 'key-vault' | 'github-app' | 'entra-wif' | 'env-var' | 'inline'
 
 const KIND_LABEL: Record<Kind, string> = {
   'azure-devops': 'Azure DevOps',
+  source: 'CI/CD source (Jenkins, GitLab, …)',
   github: 'GitHub',
   llm: 'LLM provider',
 }
+
+// CI/CD sources to migrate. base-url meaning + whether a username is needed
+// varies per platform; Bitbucket is discovery-only (the Importer can't convert it).
+const SOURCE_PLATFORMS: { id: string; label: string; urlLabel: string; needsUser: boolean }[] = [
+  { id: 'jenkins', label: 'Jenkins', urlLabel: 'Server URL', needsUser: true },
+  { id: 'gitlab', label: 'GitLab', urlLabel: 'Server URL (blank = gitlab.com)', needsUser: false },
+  { id: 'bitbucket', label: 'Bitbucket (discovery only)', urlLabel: 'Workspace', needsUser: true },
+  { id: 'circleci', label: 'CircleCI', urlLabel: 'Instance URL (blank = circleci.com)', needsUser: false },
+  { id: 'travis', label: 'Travis CI', urlLabel: 'Instance URL (blank = api.travis-ci.com)', needsUser: false },
+  { id: 'bamboo', label: 'Bamboo', urlLabel: 'Server URL', needsUser: false },
+]
 
 // Vault/identity references first; the inline (encrypted) secret is the labelled
 // fallback and is deliberately last + warned.
@@ -52,6 +64,8 @@ export function Connections({ api }: { api: BifrostApi }) {
   const [baseUrl, setBaseUrl] = useState('')
   const [isLocal, setIsLocal] = useState(true)
   const [residency, setResidency] = useState('')
+  const [platform, setPlatform] = useState('jenkins')
+  const [username, setUsername] = useState('')
   const [authMethod, setAuthMethod] = useState<AuthMethod>('key-vault')
   const [authValue, setAuthValue] = useState('')
   const [authValue2, setAuthValue2] = useState('')
@@ -88,6 +102,15 @@ export function Connections({ api }: { api: BifrostApi }) {
       let input: ConnectionInput
       if (kind === 'azure-devops') input = { name, kind, org_url: orgUrl, auth }
       else if (kind === 'github') input = { name, kind, org, auth }
+      else if (kind === 'source')
+        input = {
+          name,
+          kind: 'source',
+          platform,
+          base_url: baseUrl || undefined,
+          username: username || undefined,
+          auth,
+        }
       else
         input = {
           name,
@@ -103,6 +126,7 @@ export function Connections({ api }: { api: BifrostApi }) {
       setName('')
       setAuthValue('')
       setAuthValue2('')
+      setUsername('')
       load()
     } catch (e) {
       setError(String(e))
@@ -129,7 +153,8 @@ export function Connections({ api }: { api: BifrostApi }) {
     <main className="mx-auto w-full max-w-5xl flex-1 px-6 py-6">
       <h1 className="text-xl font-semibold text-ink-100">Connections</h1>
       <p className="mt-1 text-sm text-ink-300">
-        Link Azure DevOps orgs, GitHub orgs, and LLM providers. Bifrost stores{' '}
+        Link Azure DevOps, the other CI/CD sources to migrate (Jenkins, GitLab, CircleCI, Travis,
+        Bamboo), GitHub orgs, and LLM providers. Bifrost stores{' '}
         <span className="text-ink-100">references</span> (Key Vault, GitHub App, Entra) — never
         secret values. An inline secret is encrypted at rest as a fallback.
       </p>
@@ -153,6 +178,10 @@ export function Connections({ api }: { api: BifrostApi }) {
           <ul className="space-y-2">
             {conns.map((c) => {
               const auth = c.kind.kind === 'llm' ? c.kind.key : c.kind.auth
+              const sourceDetail =
+                c.kind.kind === 'source'
+                  ? `${c.kind.platform}${c.kind.base_url ? ` · ${c.kind.base_url}` : ''}`
+                  : ''
               return (
                 <li
                   key={c.id}
@@ -169,6 +198,7 @@ export function Connections({ api }: { api: BifrostApi }) {
                       {c.kind.kind === 'azure-devops' && c.kind.org_url}
                       {c.kind.kind === 'github' && c.kind.org}
                       {c.kind.kind === 'llm' && `${c.kind.provider} · ${c.kind.model}`}
+                      {c.kind.kind === 'source' && sourceDetail}
                       {' · '}
                       {authSummary(auth)}
                     </div>
@@ -217,6 +247,44 @@ export function Connections({ api }: { api: BifrostApi }) {
               <input className={input} value={org} onChange={(e) => setOrg(e.target.value)} required placeholder="contoso" />
             </div>
           )}
+          {kind === 'source' &&
+            (() => {
+              const spec = SOURCE_PLATFORMS.find((p) => p.id === platform) ?? SOURCE_PLATFORMS[0]
+              return (
+                <>
+                  <div>
+                    <label className={label}>Platform</label>
+                    <select className={input} value={platform} onChange={(e) => setPlatform(e.target.value)}>
+                      {SOURCE_PLATFORMS.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className={label}>{spec.urlLabel}</label>
+                    <input
+                      className={input}
+                      value={baseUrl}
+                      onChange={(e) => setBaseUrl(e.target.value)}
+                      placeholder={platform === 'bitbucket' ? 'my-workspace' : 'https://ci.example.com'}
+                    />
+                  </div>
+                  {spec.needsUser && (
+                    <div className="sm:col-span-2">
+                      <label className={label}>Username</label>
+                      <input
+                        className={input}
+                        value={username}
+                        onChange={(e) => setUsername(e.target.value)}
+                        placeholder="ci-bot"
+                      />
+                    </div>
+                  )}
+                </>
+              )
+            })()}
           {kind === 'llm' && (
             <>
               <div>

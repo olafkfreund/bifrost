@@ -104,6 +104,13 @@ export interface ConnectionView {
         is_local?: boolean
         residency?: string
       }
+    | {
+        kind: 'source'
+        platform: string
+        base_url?: string
+        username?: string
+        auth: SecretRefView
+      }
   updatedBy: string
   updatedAt: string
 }
