@@ -185,8 +185,8 @@ async fn ado_inputs(
 async fn build_from_connections(state: &AppState, tenant: &str) -> Option<Portfolio> {
     use bifrost_adapters::docker_importer::org_from_url;
     use bifrost_adapters::{
-        audit_portfolio, merge_portfolios, AuditConfig, AzureDevOpsAdapter, DockerImporter,
-        Importer, SourceAdapter,
+        audit_portfolio, merge_portfolios, source_adapter_from, AuditConfig, AzureDevOpsAdapter,
+        DockerImporter, Importer, SourceAdapter,
     };
 
     let conns = state.store.list_connections(tenant).await.ok()?;
@@ -196,36 +196,88 @@ async fn build_from_connections(state: &AppState, tenant: &str) -> Option<Portfo
 
     let mut portfolios = Vec::new();
     for conn in &conns {
-        let Some((org_url, pat)) = ado_inputs(conn, state.secrets.as_ref()).await else {
-            continue;
-        };
-        let org = org_from_url(&org_url).to_string();
-        // Pick a project to drive the Importer (org-level audit; per-project
-        // precision is #31). Enumerate is across the whole org via the adapter.
-        let probe = AzureDevOpsAdapter::new(&org_url, "", &pat);
-        let Some(project) = probe
-            .discover()
-            .await
-            .ok()
-            .and_then(|ps| ps.into_iter().next())
-        else {
-            continue;
-        };
-        let adapter = AzureDevOpsAdapter::new(&org_url, &project.name, &pat);
-        let importer = DockerImporter::new(&org, &project.name);
-        let config = AuditConfig {
-            org: org.clone(),
-            importer_version: importer
-                .version()
+        if let Some((org_url, pat)) = ado_inputs(conn, state.secrets.as_ref()).await {
+            // --- Azure DevOps ---
+            let org = org_from_url(&org_url).to_string();
+            // Pick a project to drive the Importer (org-level audit; per-project
+            // precision is #31). Enumerate is across the whole org via the adapter.
+            let probe = AzureDevOpsAdapter::new(&org_url, "", &pat);
+            let Some(project) = probe
+                .discover()
                 .await
-                .unwrap_or_else(|_| "unknown".into()),
-            importer_image_digest: importer.image_digest().await.unwrap_or_default(),
-            ado2gh_version: "n/a".into(),
-            air_gap,
-            generated_at: now_iso8601(),
-        };
-        if let Ok(p) = audit_portfolio(&adapter, &importer, config).await {
-            portfolios.push(p);
+                .ok()
+                .and_then(|ps| ps.into_iter().next())
+            else {
+                continue;
+            };
+            let adapter = AzureDevOpsAdapter::new(&org_url, &project.name, &pat);
+            let importer = DockerImporter::new(&org, &project.name);
+            let config = AuditConfig {
+                org: org.clone(),
+                importer_version: importer
+                    .version()
+                    .await
+                    .unwrap_or_else(|_| "unknown".into()),
+                importer_image_digest: importer.image_digest().await.unwrap_or_default(),
+                ado2gh_version: "n/a".into(),
+                air_gap,
+                generated_at: now_iso8601(),
+            };
+            if let Ok(p) = audit_portfolio(&adapter, &importer, config).await {
+                portfolios.push(p);
+            }
+        } else if let ConnectionKind::Source {
+            platform,
+            base_url,
+            auth,
+            username,
+        } = &conn.kind
+        {
+            // --- Other CI/CD sources (#209): Jenkins, GitLab, CircleCI, Travis, Bamboo ---
+            let Ok(secret) = state.secrets.resolve(auth).await else {
+                continue;
+            };
+            let Some(adapter) =
+                source_adapter_from(platform, base_url.as_deref(), username.as_deref(), &secret)
+            else {
+                continue;
+            };
+            // The namespace/org the Importer audits — the first discovered grouping.
+            let namespace = adapter
+                .discover()
+                .await
+                .ok()
+                .and_then(|ps| ps.into_iter().next())
+                .map(|p| p.id);
+            let Some(importer) = DockerImporter::for_source(
+                platform,
+                base_url.as_deref(),
+                namespace.as_deref(),
+                username.as_deref(),
+                &secret,
+            ) else {
+                // Discovery-only platform (e.g. Bitbucket) — no Importer audit.
+                continue;
+            };
+            // Tag the org by platform so several providers show side by side.
+            let org_tag = format!(
+                "{platform}:{}",
+                namespace.as_deref().unwrap_or(conn.name.as_str())
+            );
+            let config = AuditConfig {
+                org: org_tag,
+                importer_version: importer
+                    .version()
+                    .await
+                    .unwrap_or_else(|_| "unknown".into()),
+                importer_image_digest: importer.image_digest().await.unwrap_or_default(),
+                ado2gh_version: "n/a".into(),
+                air_gap,
+                generated_at: now_iso8601(),
+            };
+            if let Ok(p) = audit_portfolio(adapter.as_ref(), &importer, config).await {
+                portfolios.push(p);
+            }
         }
     }
     if portfolios.is_empty() {
