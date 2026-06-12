@@ -133,13 +133,11 @@ Every one of those is possible **today**, read-only, inside the editor.
 Here is the workflow you asked about — *open a pipeline, ask Bifrost to migrate it, see the
 proposed GitHub workflow* — and exactly how it fits the design.
 
-The conversion engine already exists in the Bifrost API:
-`POST /api/pipelines/:id/convert` runs the Importer dry-run, detects the gaps, fills them
-with grounded LLM context, and returns a **Proposal** (the augmented workflow + rationale +
-deterministic risk) plus a **Runbook** (the manual tasks the Importer cannot do for you). The
-portal already drives it through the three-pane review.
-
-What is missing is one MCP tool that exposes that endpoint — `bifrost_convert` — so the same
+The `bifrost_convert` tool exposes the conversion engine to your editor. It wraps
+`POST /api/pipelines/:id/convert`, which runs the Importer dry-run, detects the gaps, fills
+them with grounded LLM context, and returns a **Proposal** (the augmented workflow +
+rationale + deterministic risk) plus a **Runbook** (the manual tasks the Importer cannot do
+for you) — the same engine the portal drives through its three-pane review. So the whole
 flow runs from your editor:
 
 ```text
@@ -206,7 +204,7 @@ tools the team already uses.
 |-------|--------|
 | Read-only context tools (portfolio, assessment, coverage, forecast, readiness, program board, report) | Shipped |
 | `validate_workflow` structural check | Shipped |
-| `bifrost_convert` — convert a pipeline to a proposed workflow from the editor | Planned (wraps the existing `/convert` endpoint) |
+| `bifrost_convert` — convert a pipeline to a proposed workflow from the editor | Shipped (wraps the review-first `/convert` endpoint) |
 | `bifrost_runbook` — read a proposal's manual-task checklist | Planned |
 | Gated `bifrost_commit` — open the PR after approval | Planned (approval + live-flag gated) |
 

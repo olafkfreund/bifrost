@@ -1,14 +1,19 @@
-//! Bifrost MCP server (#241) — exposes **read-only** grounded migration context
-//! over the Model Context Protocol (stdio, newline-delimited JSON-RPC 2.0), so an
-//! agent (the Copilot coding agent, Claude, an IDE) can resolve conversion gaps
-//! grounded in the real portfolio, forecast, coverage, assessment, readiness, and
-//! report — instead of guessing.
+//! Bifrost MCP server (#241) — exposes grounded migration context over the Model
+//! Context Protocol (stdio, newline-delimited JSON-RPC 2.0), so an agent (the
+//! Copilot coding agent, Claude, an IDE) can resolve conversion gaps grounded in
+//! the real portfolio, forecast, coverage, assessment, readiness, and report —
+//! instead of guessing.
 //!
-//! It is deliberately **read-only**: it only surfaces context. Every mutation
-//! (convert, approve, commit) stays behind the control-plane API's human-approval
-//! and audit-logged path, per Bifrost's review-first and attestable rules. The
-//! server proxies the control plane at `BIFROST_API_URL` (default
-//! `http://127.0.0.1:8080`), so it inherits the API's auth and air-gap posture.
+//! The context tools are **read-only**. The one write-capable tool,
+//! `bifrost_convert` (#272), is still **review-first**: it produces a reviewable
+//! *proposal* (an augmented workflow + rationale + deterministic risk + runbook)
+//! — it never commits the workflow or opens a pull request. Every
+//! GitHub-touching mutation (commit, PR, approve) stays behind the control
+//! plane's human-approval, audit-logged path, per Bifrost's review-first and
+//! attestable rules. The server proxies the control plane at `BIFROST_API_URL`
+//! (default `http://127.0.0.1:8080`), so it inherits the API's auth and air-gap
+//! posture — convert defaults to the mock provider and makes no paid LLM call
+//! unless the tenant has configured one.
 //!
 //! Protocol routing is a pure function ([`route`]) so it is fully unit-tested
 //! without a live API; `main` does the I/O.
@@ -102,6 +107,16 @@ fn tools_list() -> Value {
             "additionalProperties": false
         }
     }));
+    tools.push(json!({
+        "name": "bifrost_convert",
+        "description": "Convert one Azure DevOps pipeline to a proposed GitHub Actions workflow. Runs the official gh actions-importer dry-run, detects unsupported/partial steps, and fills the gaps grounded in the source + the Importer's output + the failure log. Returns a Proposal (the augmented workflow + rationale + deterministic risk band) and a Runbook (the manual tasks the Importer cannot do for you). Review-first: this produces a reviewable proposal — it does NOT commit the workflow or open a pull request. Idempotent: returns the existing proposal if the pipeline was already converted.",
+        "inputSchema": {
+            "type": "object",
+            "properties": { "pipelineId": { "type": "string", "description": "The pipeline id to convert (from bifrost_portfolio)." } },
+            "required": ["pipelineId"],
+            "additionalProperties": false
+        }
+    }));
     json!(tools)
 }
 
@@ -118,6 +133,9 @@ enum Action {
         path: String,
         query: Vec<(String, String)>,
     },
+    /// A `tools/call` that needs an API POST (no body); `main` posts and wraps the
+    /// response. Used by `bifrost_convert` against `/api/pipelines/:id/convert`.
+    Post { id: Value, path: String },
 }
 
 fn ok(id: Option<Value>, result: Value) -> Value {
@@ -171,6 +189,26 @@ fn route_tool_call(id: Option<Value>, params: Option<&Value>) -> Action {
     if name == "validate_workflow" {
         let yaml = args.get("yaml").and_then(Value::as_str).unwrap_or("");
         return Action::Respond(ok(id, text_result(validate_workflow(yaml), false)));
+    }
+    if name == "bifrost_convert" {
+        let pid = args
+            .get("pipelineId")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if pid.is_empty() {
+            return Action::Respond(ok(
+                id,
+                text_result(
+                    "bifrost_convert requires a non-empty `pipelineId` argument.".to_string(),
+                    true,
+                ),
+            ));
+        }
+        return Action::Post {
+            id: id.unwrap_or(Value::Null),
+            path: format!("/api/pipelines/{pid}/convert"),
+        };
     }
     if let Some(tool) = API_TOOLS.iter().find(|t| t.name == name) {
         let mut query = Vec::new();
@@ -247,6 +285,20 @@ async fn fetch(
     }
 }
 
+/// POST to an API path with no request body (the convert endpoint takes its only
+/// parameter in the path). Same success/error shaping as [`fetch`].
+async fn post(client: &reqwest::Client, base: &str, path: &str) -> Result<String, String> {
+    let url = format!("{base}{path}");
+    let resp = client.post(&url).send().await.map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let text = resp.text().await.map_err(|e| e.to_string())?;
+    if status.is_success() {
+        Ok(text)
+    } else {
+        Err(format!("{status}: {text}"))
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let base =
         std::env::var("BIFROST_API_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
@@ -281,6 +333,10 @@ fn main() -> anyhow::Result<()> {
             Action::Respond(v) => Some(v),
             Action::Fetch { id, path, query } => {
                 let body = rt.block_on(fetch(&client, &base, &path, &query));
+                Some(fetch_response(id, &path, body))
+            }
+            Action::Post { id, path } => {
+                let body = rt.block_on(post(&client, &base, &path));
                 Some(fetch_response(id, &path, body))
             }
         };
@@ -327,6 +383,34 @@ mod tests {
             assert!(names.contains(&t.name), "missing tool {}", t.name);
         }
         assert!(names.contains(&"validate_workflow"));
+        assert!(names.contains(&"bifrost_convert"));
+    }
+
+    #[test]
+    fn convert_tool_routes_to_a_post_at_the_pipeline_path() {
+        let req = json!({
+            "jsonrpc": "2.0", "id": 6, "method": "tools/call",
+            "params": { "name": "bifrost_convert", "arguments": { "pipelineId": "payments-api" } }
+        });
+        match route(&req) {
+            Action::Post { id, path } => {
+                assert_eq!(id, json!(6));
+                assert_eq!(path, "/api/pipelines/payments-api/convert");
+            }
+            other => panic!("expected Post, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn convert_without_pipeline_id_is_an_error() {
+        let req = json!({
+            "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+            "params": { "name": "bifrost_convert", "arguments": {} }
+        });
+        let Action::Respond(v) = route(&req) else {
+            panic!("expected Respond")
+        };
+        assert_eq!(v["result"]["isError"], true);
     }
 
     #[test]
