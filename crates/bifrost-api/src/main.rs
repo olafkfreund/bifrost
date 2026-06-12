@@ -1135,6 +1135,129 @@ async fn completeness_handler(
     Json(bifrost_core::completeness(&portfolio))
 }
 
+#[derive(serde::Deserialize)]
+struct ChatBody {
+    message: String,
+}
+
+/// Grounded facts about the current migration for the assistant's system prompt.
+/// Deterministic — the model reasons over these, it does not invent the numbers.
+fn build_chat_context(p: &bifrost_core::Portfolio) -> String {
+    let t = &p.summary.totals;
+    let f = bifrost_core::forecast(&p.pipelines, &bifrost_core::RunnerRate::default());
+    let comp = bifrost_core::completeness(p);
+    let count = |s: bifrost_core::CategoryStatus| comp.iter().filter(|r| r.status == s).count();
+    format!(
+        "Migration context for org '{org}':\n\
+         - {pipes} pipelines across {projects} projects ({yaml} YAML, {classic} classic).\n\
+         - Risk bands: {green} green, {amber} amber, {red} red.\n\
+         - Forecast: {minutes} runner-minutes/month, about ${cost:.0}/month on {runner}.\n\
+         - Coverage: {manual} categories need manual GitHub setup; {notinv} categories not yet inventoried.\n\
+         - Air-gap mode: {airgap}.",
+        org = p.summary.org,
+        pipes = t.pipelines,
+        projects = t.projects,
+        yaml = t.yaml,
+        classic = t.classic,
+        green = t.green,
+        amber = t.amber,
+        red = t.red,
+        minutes = f.total_minutes,
+        cost = f.monthly_cost_usd,
+        runner = f.runner_class,
+        manual = count(bifrost_core::CategoryStatus::Manual),
+        notinv = count(bifrost_core::CategoryStatus::NotInventoried),
+        airgap = if p.summary.air_gap { "on" } else { "off" },
+    )
+}
+
+/// `POST /api/chat` (#252) — the migration assistant. Grounds the configured LLM
+/// in the current portfolio/forecast/coverage and answers a freeform question.
+/// Routed through the same provider policy as conversion, so **air-gap forces it
+/// local**. Live providers are used only when `BIFROST_CONVERT_LIVE` is set
+/// (no silent paid calls); otherwise the offline Mock assistant answers.
+/// Query-only — it cannot mutate state.
+async fn chat_handler(
+    State(state): State<Shared>,
+    Extension(caller): Extension<Identity>,
+    Json(body): Json<ChatBody>,
+) -> Json<Value> {
+    use bifrost_llm::{
+        AnthropicProvider, LlmProvider, MockLlmProvider, OllamaProvider, Router, RoutingPolicy,
+        TaskClass,
+    };
+
+    let portfolio = state.portfolio.read().await.clone();
+    let context = build_chat_context(&portfolio);
+    let prompt = format!(
+        "{context}\n\nQuestion: {}\n\nYou are Bifrost's migration assistant. Answer concisely \
+         and factually for a migration engineer, using the context above. If the answer is not \
+         in the context, say so rather than guessing. You can explain and advise; you cannot \
+         change anything.",
+        body.message
+    );
+
+    let truthy = |v: String| matches!(v.as_str(), "1" | "true" | "yes");
+    let live = std::env::var("BIFROST_CONVERT_LIVE")
+        .map(truthy)
+        .unwrap_or(false);
+    let air_gap = state.air_gap();
+
+    let conn_providers: Vec<Box<dyn LlmProvider>> = if live {
+        resolve_tenant_llm(state.store.as_ref(), state.secrets.as_ref(), &caller.tenant)
+            .await
+            .iter()
+            .filter_map(build_connection_provider)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let anthropic = (live && !air_gap && std::env::var("ANTHROPIC_API_KEY").is_ok())
+        .then(AnthropicProvider::from_env)
+        .and_then(Result::ok);
+    let ollama = (live && (air_gap || std::env::var("OLLAMA_BASE_URL").is_ok()))
+        .then(OllamaProvider::from_env);
+    let mock = MockLlmProvider;
+
+    let mut providers: Vec<&dyn LlmProvider> = Vec::new();
+    for p in &conn_providers {
+        providers.push(p.as_ref());
+    }
+    if let Some(a) = anthropic.as_ref() {
+        providers.push(a);
+    }
+    if let Some(o) = ollama.as_ref() {
+        providers.push(o);
+    }
+    providers.push(&mock);
+
+    let policy = if live {
+        RoutingPolicy::from_env()
+    } else {
+        RoutingPolicy {
+            bulk: vec!["mock".into()],
+            hard: vec!["mock".into()],
+            docs: vec!["mock".into()],
+        }
+    };
+    let router = Router::new(providers, air_gap).with_policy(policy);
+    let provider = match router.route(TaskClass::Documentation) {
+        Ok(p) => p,
+        Err(e) => {
+            return Json(
+                json!({ "reply": format!("No LLM provider available: {e}"), "provider": "none" }),
+            )
+        }
+    };
+    let name = provider.name().to_string();
+    match provider.chat(&prompt).await {
+        Ok(reply) => Json(json!({ "reply": reply, "provider": name })),
+        Err(e) => Json(
+            json!({ "reply": format!("The assistant could not answer: {e}"), "provider": name }),
+        ),
+    }
+}
+
 async fn report_json(
     State(state): State<Shared>,
     axum::extract::Query(q): axum::extract::Query<ReportQuery>,
@@ -1874,6 +1997,7 @@ fn app(state: Shared) -> Router {
         .route("/api/providers", get(providers))
         .route("/api/forecast", get(forecast_handler))
         .route("/api/completeness", get(completeness_handler))
+        .route("/api/chat", post(chat_handler))
         .route("/api/report", get(report))
         .route("/api/report.json", get(report_json))
         .route("/api/report.pdf", get(report_pdf_handler))
@@ -1914,6 +2038,11 @@ fn required_role(method: &axum::http::Method, path: &str) -> Role {
     // Changing the air-gap posture is an admin action; reading settings is open.
     if path.starts_with("/api/settings/") && *method != Method::GET {
         return Role::Admin;
+    }
+    // The chat assistant is read-only (it cannot mutate state) even though it is
+    // a POST, so a Viewer may use it.
+    if path == "/api/chat" {
+        return Role::Viewer;
     }
     match *method {
         Method::GET | Method::HEAD | Method::OPTIONS => Role::Viewer,

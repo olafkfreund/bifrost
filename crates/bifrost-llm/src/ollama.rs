@@ -82,9 +82,35 @@ impl LlmProvider for OllamaProvider {
             .map_err(|e| LlmError::Parse(format!("response envelope: {e}: {text}")))?;
         parse_gap_fill(&parsed.message.content)
     }
+
+    async fn chat(&self, prompt: &str) -> Result<String, LlmError> {
+        // Freeform (no `format: json`) — the assistant returns prose.
+        let body = ChatRequestPlain {
+            model: &self.model,
+            stream: false,
+            messages: vec![ChatMessage {
+                role: "user",
+                content: prompt.to_string(),
+            }],
+        };
+        let url = format!("{}/api/chat", self.base_url);
+        let text =
+            crate::http_text_with_retry("ollama", || self.client.post(&url).json(&body)).await?;
+        let parsed: ChatResponse = serde_json::from_str(&text)
+            .map_err(|e| LlmError::Parse(format!("response envelope: {e}: {text}")))?;
+        Ok(parsed.message.content)
+    }
 }
 
 // --- Ollama chat API wire types (only the fields we use) ---
+
+/// A chat request without the JSON-format constraint, for freeform replies.
+#[derive(Serialize)]
+struct ChatRequestPlain<'a> {
+    model: &'a str,
+    stream: bool,
+    messages: Vec<ChatMessage<'a>>,
+}
 
 #[derive(Serialize)]
 struct ChatRequest<'a> {
