@@ -19,7 +19,7 @@
 //!   the serialized shape could carry a secret value.
 
 use bifrost_adapters::source::{AdapterError, SourceAdapter};
-use bifrost_adapters::{gitlab, jenkins, MockSourceAdapter};
+use bifrost_adapters::{bitbucket, gitlab, jenkins, MockSourceAdapter};
 use bifrost_core::Classification;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -198,6 +198,27 @@ fn gitlab_subject() -> MockSourceAdapter {
     }
 }
 
+fn bitbucket_subject() -> MockSourceAdapter {
+    let repos: Value = serde_json::from_str(include_str!(
+        "../../../fixtures/bitbucket/repositories.json"
+    ))
+    .unwrap();
+    let vars: Value =
+        serde_json::from_str(include_str!("../../../fixtures/bitbucket/variables.json")).unwrap();
+    // Pipelines-enabled repos (the live adapter probes pipelines_config per repo).
+    let enabled: std::collections::HashSet<String> =
+        ["acme/web-app".to_string(), "acme/data-jobs".to_string()]
+            .into_iter()
+            .collect();
+    MockSourceAdapter {
+        projects: bitbucket::parse_projects(&repos),
+        pipelines: bitbucket::parse_repos(&repos, &enabled),
+        service_connections: Vec::new(),
+        variable_groups: vec![bitbucket::parse_variables(&vars, "acme/web-app")],
+        tasks: Vec::new(),
+    }
+}
+
 #[tokio::test]
 async fn azure_devops_is_conformant() {
     // The canned mock mirrors the Azure DevOps adapter's discovered shape.
@@ -212,4 +233,9 @@ async fn jenkins_is_conformant() {
 #[tokio::test]
 async fn gitlab_is_conformant() {
     assert_conformance("gitlab", &gitlab_subject()).await;
+}
+
+#[tokio::test]
+async fn bitbucket_is_conformant() {
+    assert_conformance("bitbucket", &bitbucket_subject()).await;
 }

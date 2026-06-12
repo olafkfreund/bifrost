@@ -7,6 +7,7 @@
 pub mod ado_auth;
 pub mod azure_devops;
 pub mod baseline;
+pub mod bitbucket;
 pub mod convert;
 pub mod docker_importer;
 pub mod github_auth;
@@ -27,6 +28,7 @@ pub use azure_devops::AzureDevOpsAdapter;
 pub use baseline::{
     AzureDevOpsBaseline, BaselineError, BaselineRequest, BaselineSource, MockBaselineSource,
 };
+pub use bitbucket::BitbucketAdapter;
 pub use convert::{convert_pipeline, ConversionError, ConversionOutcome};
 pub use docker_importer::DockerImporter;
 pub use github_auth::{
