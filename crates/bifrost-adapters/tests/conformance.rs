@@ -19,7 +19,7 @@
 //!   the serialized shape could carry a secret value.
 
 use bifrost_adapters::source::{AdapterError, SourceAdapter};
-use bifrost_adapters::{bitbucket, gitlab, jenkins, MockSourceAdapter};
+use bifrost_adapters::{bitbucket, circleci, gitlab, jenkins, MockSourceAdapter};
 use bifrost_core::Classification;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -235,7 +235,26 @@ async fn gitlab_is_conformant() {
     assert_conformance("gitlab", &gitlab_subject()).await;
 }
 
+fn circleci_subject() -> MockSourceAdapter {
+    let projects: Value =
+        serde_json::from_str(include_str!("../../../fixtures/circleci/projects.json")).unwrap();
+    let envvars: Value =
+        serde_json::from_str(include_str!("../../../fixtures/circleci/envvars.json")).unwrap();
+    MockSourceAdapter {
+        projects: circleci::parse_projects(&projects),
+        pipelines: circleci::parse_pipelines(&projects),
+        service_connections: Vec::new(),
+        variable_groups: vec![circleci::parse_envvars(&envvars, "acme/web")],
+        tasks: Vec::new(),
+    }
+}
+
 #[tokio::test]
 async fn bitbucket_is_conformant() {
     assert_conformance("bitbucket", &bitbucket_subject()).await;
+}
+
+#[tokio::test]
+async fn circleci_is_conformant() {
+    assert_conformance("circleci", &circleci_subject()).await;
 }

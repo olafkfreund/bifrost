@@ -1,0 +1,20 @@
+[
+  {
+    "vcs_url": "https://github.com/acme/web",
+    "username": "acme",
+    "reponame": "web",
+    "default_branch": "main"
+  },
+  {
+    "vcs_url": "https://github.com/acme/api",
+    "username": "acme",
+    "reponame": "api",
+    "default_branch": "main"
+  },
+  {
+    "vcs_url": "https://bitbucket.org/platform/infra",
+    "username": "platform",
+    "reponame": "infra",
+    "default_branch": "master"
+  }
+]

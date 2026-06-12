@@ -1,0 +1,6 @@
+{
+  "items": [
+    { "name": "AWS_ACCESS_KEY_ID", "value": "xxxx1234" },
+    { "name": "DEPLOY_TOKEN", "value": "xxxxabcd" }
+  ]
+}
