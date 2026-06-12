@@ -267,16 +267,19 @@ async fn convert(
         .await
         .ok()
         .flatten();
-    let outcome = match run_conversion(&id, project.as_deref(), policy, state.air_gap()).await {
-        Ok(outcome) => {
-            state.metrics.inc_conversion(true);
-            outcome
-        }
-        Err(e) => {
-            state.metrics.inc_conversion(false);
-            return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
-        }
-    };
+    let llm_conns =
+        resolve_tenant_llm(state.store.as_ref(), state.secrets.as_ref(), &caller.tenant).await;
+    let outcome =
+        match run_conversion(&id, project.as_deref(), policy, state.air_gap(), &llm_conns).await {
+            Ok(outcome) => {
+                state.metrics.inc_conversion(true);
+                outcome
+            }
+            Err(e) => {
+                state.metrics.inc_conversion(false);
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+            }
+        };
     // Per-job LLM token/cost accounting (#104) — surfaced on the response for cost
     // control. Captured before the proposal/runbook are moved into the record.
     let cost = outcome.cost;
@@ -931,6 +934,93 @@ async fn get_settings(State(state): State<Shared>) -> Json<Value> {
     }))
 }
 
+/// `GET /api/providers` (#197) — the LLM providers routable for the caller's
+/// tenant: which are configured (via env or a portal connection) and the exact
+/// `provider.name()` to use in the routing policy, plus how to enable the rest.
+async fn providers(
+    State(state): State<Shared>,
+    Extension(caller): Extension<Identity>,
+) -> Json<Value> {
+    let truthy = |v: String| matches!(v.as_str(), "1" | "true" | "yes");
+    let live = std::env::var("BIFROST_CONVERT_LIVE")
+        .map(truthy)
+        .unwrap_or(false);
+    let env_set = |k: &str| std::env::var(k).map(|v| !v.is_empty()).unwrap_or(false);
+
+    // Which provider name()s a connection supplies (only those that build).
+    let conns =
+        resolve_tenant_llm(state.store.as_ref(), state.secrets.as_ref(), &caller.tenant).await;
+    let from_connection = |name: &str| {
+        conns.iter().any(|c| {
+            build_connection_provider(c).is_some()
+                && matches!(
+                    (c.provider.as_str(), name),
+                    ("anthropic", "anthropic")
+                        | ("gemini", "gemini")
+                        | ("github-models", "copilot")
+                        | ("copilot", "copilot")
+                        | ("ollama", "ollama")
+                        | ("openai-compatible", "openai-compatible")
+                        | ("azure-openai", "azure-openai")
+                )
+        })
+    };
+
+    // (routing name, env var(s) that enable it, human label).
+    let catalog = [
+        ("anthropic", "ANTHROPIC_API_KEY", "Anthropic (Claude)"),
+        ("gemini", "GEMINI_API_KEY", "Google Gemini (AI Studio)"),
+        ("copilot", "GITHUB_MODELS_TOKEN", "GitHub Copilot / Models"),
+        (
+            "azure-openai",
+            "AZURE_OPENAI_ENDPOINT",
+            "Azure OpenAI Service",
+        ),
+        ("vertex", "VERTEX_PROJECT + VERTEX_TOKEN", "GCP Vertex AI"),
+        (
+            "openai-compatible",
+            "BIFROST_OPENAI_BASE_URL",
+            "OpenAI-compatible (incl. AWS Bedrock via gateway)",
+        ),
+        ("ollama", "OLLAMA_BASE_URL", "Ollama (local)"),
+    ];
+    let catalog: Vec<Value> = catalog
+        .iter()
+        .map(|(name, env, label)| {
+            let via_env = live
+                && match *name {
+                    "vertex" => env_set("VERTEX_PROJECT") && env_set("VERTEX_TOKEN"),
+                    "azure-openai" => env_set("AZURE_OPENAI_ENDPOINT"),
+                    "openai-compatible" => env_set("BIFROST_OPENAI_BASE_URL"),
+                    "ollama" => env_set("OLLAMA_BASE_URL"),
+                    "anthropic" => env_set("ANTHROPIC_API_KEY"),
+                    "gemini" => env_set("GEMINI_API_KEY"),
+                    "copilot" => env_set("GITHUB_MODELS_TOKEN"),
+                    _ => false,
+                };
+            let via_connection = from_connection(name);
+            json!({
+                "name": name,
+                "label": label,
+                "active": via_env || via_connection,
+                "viaConnection": via_connection,
+                "viaEnv": via_env,
+                "enableEnv": env,
+            })
+        })
+        .collect();
+    let available: Vec<&Value> = catalog
+        .iter()
+        .filter(|c| c["active"] == Value::Bool(true))
+        .collect();
+
+    Json(json!({
+        "live": live,
+        "available": available.iter().map(|c| c["name"].clone()).collect::<Vec<_>>(),
+        "catalog": catalog,
+    }))
+}
+
 #[derive(Deserialize)]
 struct AirGapBody {
     enabled: bool,
@@ -1227,12 +1317,17 @@ async fn start_convert_job(
 
     let n = state.next_job.fetch_add(1, Ordering::Relaxed);
     let id = format!("job-{n}");
+    // Resolve the tenant's LLM connections once for the whole job (#197).
+    let llm_conns = std::sync::Arc::new(
+        resolve_tenant_llm(state.store.as_ref(), state.secrets.as_ref(), &caller.tenant).await,
+    );
     let job = jobs::spawn_convert_job(
         id.clone(),
         state.store.clone(),
         pairs,
         caller.tenant,
         state.air_gap(),
+        llm_conns,
     );
     state.jobs.write().await.insert(id.clone(), job.clone());
     Json(json!({ "jobId": id, "total": job.total }))
@@ -1297,11 +1392,93 @@ async fn job_events(
 ///   frontier), so no pipeline data leaves the box.
 ///
 /// Unset, this is the zero-config mock path.
+/// An LLM connection with its secret resolved to a usable value (#197). Built
+/// from a tenant's stored `Llm` connection so a key configured in the portal
+/// actually drives a provider.
+#[derive(Clone)]
+pub(crate) struct ResolvedLlm {
+    pub provider: String,
+    pub base_url: Option<String>,
+    pub model: String,
+    pub key: Option<String>,
+    pub is_local: bool,
+}
+
+/// Resolve a tenant's stored `Llm` connections (SecretResolver → key value) into
+/// [`ResolvedLlm`]s ready to build providers from.
+pub(crate) async fn resolve_tenant_llm(
+    store: &dyn store::ProposalStore,
+    secrets: &dyn secrets::SecretResolver,
+    tenant: &str,
+) -> Vec<ResolvedLlm> {
+    let conns = store.list_connections(tenant).await.unwrap_or_default();
+    let mut out = Vec::new();
+    for c in &conns {
+        if let ConnectionKind::Llm {
+            provider,
+            base_url,
+            model,
+            key,
+            is_local,
+            ..
+        } = &c.kind
+        {
+            let resolved_key = match key {
+                Some(k) => secrets.resolve(k).await.ok(),
+                None => None,
+            };
+            out.push(ResolvedLlm {
+                provider: provider.clone(),
+                base_url: base_url.clone(),
+                model: model.clone(),
+                key: resolved_key,
+                is_local: *is_local,
+            });
+        }
+    }
+    out
+}
+
+/// Construct an [`LlmProvider`](bifrost_llm::LlmProvider) from a resolved
+/// connection. `None` when the family is unknown or a required field is missing
+/// (e.g. a key for a frontier, or a base URL for a local endpoint).
+fn build_connection_provider(c: &ResolvedLlm) -> Option<Box<dyn bifrost_llm::LlmProvider>> {
+    use bifrost_llm::{
+        AnthropicProvider, AzureOpenAiProvider, CopilotProvider, GeminiProvider, OllamaProvider,
+        OpenAiCompatibleProvider,
+    };
+    let model = c.model.clone();
+    match c.provider.as_str() {
+        "anthropic" => Some(Box::new(AnthropicProvider::new(c.key.clone()?, model))),
+        "gemini" => Some(Box::new(GeminiProvider::new(c.key.clone()?, model))),
+        "github-models" | "copilot" => Some(Box::new(CopilotProvider::new(c.key.clone()?, model))),
+        "ollama" => Some(Box::new(OllamaProvider::new(c.base_url.clone()?, model))),
+        "openai-compatible" => Some(Box::new(OpenAiCompatibleProvider::new(
+            c.base_url.clone()?,
+            model,
+            c.key.clone(),
+            c.is_local,
+        ))),
+        // Azure: the connection's base_url is the resource endpoint, model is the
+        // deployment name; default api-version.
+        "azure-openai" => Some(Box::new(AzureOpenAiProvider::new(
+            c.base_url.clone()?,
+            model,
+            None,
+            c.key.clone(),
+            None,
+            c.is_local,
+        ))),
+        _ => None,
+    }
+}
+
 async fn run_conversion(
     pipeline_id: &str,
     project: Option<&str>,
     policy_override: Option<RoutingPolicy>,
     air_gap: bool,
+    llm_conns: &[ResolvedLlm],
 ) -> Result<ConversionOutcome, bifrost_adapters::ConversionError> {
     use bifrost_adapters::{DockerImporter, Importer};
     use bifrost_llm::{
@@ -1350,6 +1527,17 @@ async fn run_conversion(
         (live && std::env::var("VERTEX_PROJECT").is_ok() && std::env::var("VERTEX_TOKEN").is_ok())
             .then(VertexProvider::from_env)
             .and_then(Result::ok);
+    // Providers configured via portal connections (#197) — resolved keys already.
+    // Their own is_local flag governs air-gap eligibility (the Router enforces it),
+    // so they need no frontier gate here.
+    let conn_providers: Vec<Box<dyn LlmProvider>> = if live {
+        llm_conns
+            .iter()
+            .filter_map(build_connection_provider)
+            .collect()
+    } else {
+        Vec::new()
+    };
     let mock_llm = MockLlmProvider;
 
     let live_llm = anthropic.is_some()
@@ -1358,8 +1546,12 @@ async fn run_conversion(
         || ollama.is_some()
         || openai_compat.is_some()
         || azure_openai.is_some()
-        || vertex.is_some();
+        || vertex.is_some()
+        || !conn_providers.is_empty();
     let mut providers: Vec<&dyn LlmProvider> = Vec::new();
+    for p in &conn_providers {
+        providers.push(p.as_ref());
+    }
     if let Some(a) = anthropic.as_ref() {
         providers.push(a);
     }
@@ -1456,6 +1648,7 @@ fn app(state: Shared) -> Router {
         .route("/api/routing", get(get_routing).put(put_routing))
         .route("/api/settings", get(get_settings))
         .route("/api/settings/air-gap", put(set_air_gap_setting))
+        .route("/api/providers", get(providers))
         .route("/api/proposals/:id/runbook", patch(set_runbook_item))
         .route("/api/jobs/convert", post(start_convert_job))
         .route("/api/jobs/:id", get(job_status))
@@ -1690,7 +1883,7 @@ mod tests {
 
     #[tokio::test]
     async fn conversion_helper_produces_a_draft_proposal_and_runbook() {
-        let outcome = run_conversion("SARC-main", None, None, false)
+        let outcome = run_conversion("SARC-main", None, None, false, &[])
             .await
             .expect("offline conversion succeeds");
         assert_eq!(outcome.proposal.status, ProposalStatus::Draft);
@@ -2132,6 +2325,40 @@ mod tests {
     }
 
     #[test]
+    fn connection_providers_build_by_family_and_respect_air_gap_eligibility() {
+        let mk = |provider: &str, base_url: Option<&str>, key: Option<&str>, is_local: bool| {
+            ResolvedLlm {
+                provider: provider.into(),
+                base_url: base_url.map(str::to_string),
+                model: "m".into(),
+                key: key.map(str::to_string),
+                is_local,
+            }
+        };
+
+        // A frontier key configured in the portal builds the named provider.
+        let a = build_connection_provider(&mk("anthropic", None, Some("k"), false)).unwrap();
+        assert_eq!(a.name(), "anthropic");
+        assert!(!a.is_local());
+
+        // github-models family maps to the "copilot" route name.
+        let c = build_connection_provider(&mk("github-models", None, Some("t"), false)).unwrap();
+        assert_eq!(c.name(), "copilot");
+
+        // An in-network OpenAI-compatible endpoint is air-gap eligible.
+        let l =
+            build_connection_provider(&mk("openai-compatible", Some("http://x/v1"), None, true))
+                .unwrap();
+        assert_eq!(l.name(), "openai-compatible");
+        assert!(l.is_local(), "is_local connection => air-gap eligible");
+
+        // Missing required fields / unknown family don't build.
+        assert!(build_connection_provider(&mk("anthropic", None, None, false)).is_none());
+        assert!(build_connection_provider(&mk("ollama", None, None, true)).is_none());
+        assert!(build_connection_provider(&mk("nope", None, Some("k"), false)).is_none());
+    }
+
+    #[test]
     fn air_gap_toggles_unless_locked() {
         let s = test_state();
         assert!(!s.air_gap());
@@ -2160,6 +2387,37 @@ mod tests {
             .await
             .unwrap();
         resp.status()
+    }
+
+    #[tokio::test]
+    async fn providers_endpoint_lists_the_catalog() {
+        use tower::ServiceExt;
+        let state = enforced_state();
+        let resp = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/providers")
+                    .header(axum::http::header::AUTHORIZATION, "Bearer acme/viewer")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        // The catalog names every routable provider family.
+        let names: Vec<&str> = v["catalog"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["name"].as_str().unwrap())
+            .collect();
+        for expected in ["anthropic", "azure-openai", "vertex", "ollama", "copilot"] {
+            assert!(names.contains(&expected), "catalog missing {expected}");
+        }
     }
 
     #[tokio::test]
