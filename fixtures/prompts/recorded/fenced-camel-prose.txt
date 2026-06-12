@@ -1,0 +1,13 @@
+Here's the minimal fragment that closes the gap:
+
+```json
+{
+  "proposedYaml": "- name: Restore secure file\n  run: echo \"$SECURE_FILE\" > app.config\n  env:\n    SECURE_FILE: ${{ secrets.APP_CONFIG }}",
+  "rationale": "Reproduces the secure-file restore by writing a secret into the workspace at build time.",
+  "riskFlags": ["Reviewer must confirm the secret name matches the migrated variable group"],
+  "verifySteps": ["Run in sandbox; confirm app.config is present and well-formed"],
+  "confidence": 0.55
+}
+```
+
+Let me know if the downstream steps need adjustment.
