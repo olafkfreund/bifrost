@@ -1,0 +1,13 @@
+{
+  "proposed_yaml": "- name: Download secure file\n  uses: actions/download-artifact@v4\n  with:\n    name: ${{ secrets.SECURE_FILE_NAME }}",
+  "rationale": "DownloadSecureFile@1 stages a secret file into the agent; the closest grounded GitHub Actions equivalent is restoring it from an artifact or secret-backed store rather than a marketplace task.",
+  "risk_flags": [
+    "Confirm the secure file is published as an artifact or stored as a secret before this runs",
+    "Validate file permissions match the ADO secure-file behaviour"
+  ],
+  "verify_steps": [
+    "Run the workflow in a sandbox and confirm the file lands at the expected path",
+    "Diff the downstream step's behaviour against the ADO baseline run"
+  ],
+  "confidence": 0.62
+}

@@ -124,7 +124,9 @@ pub fn build_gap_fill_prompt(req: &GapFillRequest) -> String {
 /// Models often wrap JSON in ```` ```json ```` fences or add a sentence before
 /// it, so we extract the outermost `{ … }` object before deserializing. Shared
 /// by every provider so the wire contract is enforced in exactly one place.
-pub(crate) fn parse_gap_fill(text: &str) -> Result<GapFillResponse, LlmError> {
+/// Public so the prompt-eval harness (#103) can replay recorded model outputs
+/// through the same enforcement path the providers use.
+pub fn parse_gap_fill(text: &str) -> Result<GapFillResponse, LlmError> {
     let json = extract_json_object(text)
         .ok_or_else(|| LlmError::Parse(format!("no JSON object in model output: {text}")))?;
     serde_json::from_str(json).map_err(|e| LlmError::Parse(format!("{e}: {json}")))
