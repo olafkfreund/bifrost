@@ -49,8 +49,29 @@ export function Program({ api }: { api: BifrostApi }) {
             A phased migration: pilot the easy pipelines, prove the process, then roll out in waves — the hard tail last.
           </p>
         </div>
-        <div className="tnum text-sm text-ink-300">
-          {num(totalDone)} / {num(totalPipelines)} pipelines done
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => {
+              api
+                .getAgentInstructions()
+                .then((md) => {
+                  const url = URL.createObjectURL(new Blob([md], { type: 'text/markdown' }))
+                  const a = document.createElement('a')
+                  a.href = url
+                  a.download = 'copilot-instructions.md'
+                  a.click()
+                  URL.revokeObjectURL(url)
+                })
+                .catch((e) => setError(String(e)))
+            }}
+            title="Download .github/copilot-instructions.md to drop into migrated repos (grounds an agent in the migration)"
+            className="rounded-lg border border-ink-800 px-3 py-1.5 text-xs text-ink-200 transition hover:bg-ink-850 hover:text-ink-100"
+          >
+            copilot-instructions.md
+          </button>
+          <span className="tnum text-sm text-ink-300">
+            {num(totalDone)} / {num(totalPipelines)} pipelines done
+          </span>
         </div>
       </div>
 
