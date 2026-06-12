@@ -117,6 +117,26 @@ fn tools_list() -> Value {
             "additionalProperties": false
         }
     }));
+    tools.push(json!({
+        "name": "bifrost_runbook",
+        "description": "Read the migration runbook for a pipeline's proposal: the manual tasks the Importer cannot do for you (secrets to create, service connections to federate via OIDC, self-hosted runners to label, environments to recreate), each with whether it is required and whether it is already done. Read-only. The pipeline must have been converted first (see bifrost_convert).",
+        "inputSchema": {
+            "type": "object",
+            "properties": { "pipelineId": { "type": "string", "description": "The pipeline id whose proposal runbook to read (from bifrost_portfolio)." } },
+            "required": ["pipelineId"],
+            "additionalProperties": false
+        }
+    }));
+    tools.push(json!({
+        "name": "bifrost_commit",
+        "description": "Open the pull request for an APPROVED proposal: pushes the converted workflow to a branch and opens a PR, then moves the proposal to `committed`. Gated three ways: (1) this tool is disabled unless the server is started with BIFROST_MCP_COMMIT=1, so an agent cannot open PRs autonomously; (2) the proposal must already be `approved` in the review portal (the API rejects anything else); (3) a real GitHub PR is opened only when the API runs with BIFROST_COMMIT_LIVE, otherwise a mock PR URL is returned. Approval is a human decision and is never done from here.",
+        "inputSchema": {
+            "type": "object",
+            "properties": { "pipelineId": { "type": "string", "description": "The pipeline id whose approved proposal to commit (from bifrost_portfolio)." } },
+            "required": ["pipelineId"],
+            "additionalProperties": false
+        }
+    }));
     json!(tools)
 }
 
@@ -151,7 +171,11 @@ fn text_result(text: String, is_error: bool) -> Value {
 }
 
 /// Route a parsed JSON-RPC request to an [`Action`]. Pure — no I/O.
-fn route(req: &Value) -> Action {
+///
+/// `commit_enabled` is the server's `BIFROST_MCP_COMMIT` opt-in: when false (the
+/// default) the `bifrost_commit` tool refuses, so an agent cannot open pull
+/// requests autonomously.
+fn route(req: &Value, commit_enabled: bool) -> Action {
     let method = req.get("method").and_then(Value::as_str).unwrap_or("");
     let id = req.get("id").cloned();
     match method {
@@ -166,7 +190,7 @@ fn route(req: &Value) -> Action {
         "notifications/initialized" => Action::Notify,
         "ping" => Action::Respond(ok(id, json!({}))),
         "tools/list" => Action::Respond(ok(id, json!({ "tools": tools_list() }))),
-        "tools/call" => route_tool_call(id, req.get("params")),
+        "tools/call" => route_tool_call(id, req.get("params"), commit_enabled),
         _ => {
             // No id => notification we don't handle; with id => method not found.
             if id.is_none() {
@@ -178,7 +202,7 @@ fn route(req: &Value) -> Action {
     }
 }
 
-fn route_tool_call(id: Option<Value>, params: Option<&Value>) -> Action {
+fn route_tool_call(id: Option<Value>, params: Option<&Value>, commit_enabled: bool) -> Action {
     let params = params.cloned().unwrap_or_else(|| json!({}));
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
     let args = params
@@ -186,28 +210,62 @@ fn route_tool_call(id: Option<Value>, params: Option<&Value>) -> Action {
         .cloned()
         .unwrap_or_else(|| json!({}));
 
+    // The pipeline id is required by every pipeline-scoped tool below; read it once.
+    let pid = args
+        .get("pipelineId")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    let missing_pid = |id: Option<Value>, tool: &str| {
+        Action::Respond(ok(
+            id,
+            text_result(
+                format!("{tool} requires a non-empty `pipelineId` argument."),
+                true,
+            ),
+        ))
+    };
+
     if name == "validate_workflow" {
         let yaml = args.get("yaml").and_then(Value::as_str).unwrap_or("");
         return Action::Respond(ok(id, text_result(validate_workflow(yaml), false)));
     }
     if name == "bifrost_convert" {
-        let pid = args
-            .get("pipelineId")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .trim();
         if pid.is_empty() {
+            return missing_pid(id, "bifrost_convert");
+        }
+        return Action::Post {
+            id: id.unwrap_or(Value::Null),
+            path: format!("/api/pipelines/{pid}/convert"),
+        };
+    }
+    if name == "bifrost_runbook" {
+        if pid.is_empty() {
+            return missing_pid(id, "bifrost_runbook");
+        }
+        return Action::Fetch {
+            id: id.unwrap_or(Value::Null),
+            path: format!("/api/proposals/prop-{pid}"),
+            query: Vec::new(),
+        };
+    }
+    if name == "bifrost_commit" {
+        if pid.is_empty() {
+            return missing_pid(id, "bifrost_commit");
+        }
+        if !commit_enabled {
             return Action::Respond(ok(
                 id,
                 text_result(
-                    "bifrost_convert requires a non-empty `pipelineId` argument.".to_string(),
+                    "bifrost_commit is disabled. Start the server with BIFROST_MCP_COMMIT=1 to allow opening pull requests from the editor. The proposal must already be approved in the review portal; approval is never done from here."
+                        .to_string(),
                     true,
                 ),
             ));
         }
         return Action::Post {
             id: id.unwrap_or(Value::Null),
-            path: format!("/api/pipelines/{pid}/convert"),
+            path: format!("/api/proposals/prop-{pid}/commit"),
         };
     }
     if let Some(tool) = API_TOOLS.iter().find(|t| t.name == name) {
@@ -302,7 +360,17 @@ async fn post(client: &reqwest::Client, base: &str, path: &str) -> Result<String
 fn main() -> anyhow::Result<()> {
     let base =
         std::env::var("BIFROST_API_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
-    eprintln!("bifrost-mcp: read-only migration context over MCP/stdio; proxying {base}");
+    let commit_enabled = std::env::var("BIFROST_MCP_COMMIT")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    eprintln!(
+        "bifrost-mcp: grounded migration context over MCP/stdio; proxying {base}; commit {}",
+        if commit_enabled {
+            "ENABLED (BIFROST_MCP_COMMIT)"
+        } else {
+            "disabled"
+        }
+    );
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -328,7 +396,7 @@ fn main() -> anyhow::Result<()> {
             Err(_) => continue, // ignore malformed lines rather than crash the stream
         };
 
-        let response = match route(&req) {
+        let response = match route(&req, commit_enabled) {
             Action::Notify => None,
             Action::Respond(v) => Some(v),
             Action::Fetch { id, path, query } => {
@@ -356,7 +424,7 @@ mod tests {
     #[test]
     fn initialize_advertises_tools_capability() {
         let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} });
-        match route(&req) {
+        match route(&req, false) {
             Action::Respond(v) => {
                 assert_eq!(v["result"]["protocolVersion"], PROTOCOL_VERSION);
                 assert!(v["result"]["capabilities"]["tools"].is_object());
@@ -370,7 +438,7 @@ mod tests {
     #[test]
     fn tools_list_includes_every_api_tool_plus_validate() {
         let req = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" });
-        let Action::Respond(v) = route(&req) else {
+        let Action::Respond(v) = route(&req, false) else {
             panic!("expected Respond")
         };
         let names: Vec<&str> = v["result"]["tools"]
@@ -384,6 +452,8 @@ mod tests {
         }
         assert!(names.contains(&"validate_workflow"));
         assert!(names.contains(&"bifrost_convert"));
+        assert!(names.contains(&"bifrost_runbook"));
+        assert!(names.contains(&"bifrost_commit"));
     }
 
     #[test]
@@ -392,7 +462,7 @@ mod tests {
             "jsonrpc": "2.0", "id": 6, "method": "tools/call",
             "params": { "name": "bifrost_convert", "arguments": { "pipelineId": "payments-api" } }
         });
-        match route(&req) {
+        match route(&req, false) {
             Action::Post { id, path } => {
                 assert_eq!(id, json!(6));
                 assert_eq!(path, "/api/pipelines/payments-api/convert");
@@ -407,7 +477,67 @@ mod tests {
             "jsonrpc": "2.0", "id": 7, "method": "tools/call",
             "params": { "name": "bifrost_convert", "arguments": {} }
         });
-        let Action::Respond(v) = route(&req) else {
+        let Action::Respond(v) = route(&req, false) else {
+            panic!("expected Respond")
+        };
+        assert_eq!(v["result"]["isError"], true);
+    }
+
+    #[test]
+    fn runbook_tool_routes_to_a_get_at_the_proposal_path() {
+        let req = json!({
+            "jsonrpc": "2.0", "id": 8, "method": "tools/call",
+            "params": { "name": "bifrost_runbook", "arguments": { "pipelineId": "11" } }
+        });
+        match route(&req, false) {
+            Action::Fetch { id, path, query } => {
+                assert_eq!(id, json!(8));
+                assert_eq!(path, "/api/proposals/prop-11");
+                assert!(query.is_empty());
+            }
+            other => panic!("expected Fetch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn commit_is_disabled_by_default() {
+        let req = json!({
+            "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+            "params": { "name": "bifrost_commit", "arguments": { "pipelineId": "11" } }
+        });
+        let Action::Respond(v) = route(&req, false) else {
+            panic!("expected Respond when commit is disabled")
+        };
+        assert_eq!(v["result"]["isError"], true);
+        let text = v["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.contains("BIFROST_MCP_COMMIT"),
+            "should name the opt-in flag"
+        );
+    }
+
+    #[test]
+    fn commit_enabled_routes_to_a_post_at_the_proposal_commit_path() {
+        let req = json!({
+            "jsonrpc": "2.0", "id": 10, "method": "tools/call",
+            "params": { "name": "bifrost_commit", "arguments": { "pipelineId": "11" } }
+        });
+        match route(&req, true) {
+            Action::Post { id, path } => {
+                assert_eq!(id, json!(10));
+                assert_eq!(path, "/api/proposals/prop-11/commit");
+            }
+            other => panic!("expected Post, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn commit_without_pipeline_id_is_an_error_even_when_enabled() {
+        let req = json!({
+            "jsonrpc": "2.0", "id": 11, "method": "tools/call",
+            "params": { "name": "bifrost_commit", "arguments": {} }
+        });
+        let Action::Respond(v) = route(&req, true) else {
             panic!("expected Respond")
         };
         assert_eq!(v["result"]["isError"], true);
@@ -419,7 +549,7 @@ mod tests {
             "jsonrpc": "2.0", "id": 3, "method": "tools/call",
             "params": { "name": "bifrost_forecast", "arguments": {} }
         });
-        match route(&req) {
+        match route(&req, false) {
             Action::Fetch { id, path, query } => {
                 assert_eq!(id, json!(3));
                 assert_eq!(path, "/api/forecast");
@@ -435,7 +565,7 @@ mod tests {
             "jsonrpc": "2.0", "id": 4, "method": "tools/call",
             "params": { "name": "bifrost_report", "arguments": { "project": "Payments" } }
         });
-        match route(&req) {
+        match route(&req, false) {
             Action::Fetch { path, query, .. } => {
                 assert_eq!(path, "/api/report");
                 assert_eq!(query, vec![("project".to_string(), "Payments".to_string())]);
@@ -450,7 +580,7 @@ mod tests {
             "jsonrpc": "2.0", "id": 5, "method": "tools/call",
             "params": { "name": "validate_workflow", "arguments": { "yaml": "name: x\n" } }
         });
-        let Action::Respond(v) = route(&req) else {
+        let Action::Respond(v) = route(&req, false) else {
             panic!("expected Respond")
         };
         let text = v["result"]["content"][0]["text"].as_str().unwrap();
@@ -464,13 +594,13 @@ mod tests {
     #[test]
     fn notifications_produce_no_response() {
         let req = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
-        assert_eq!(route(&req), Action::Notify);
+        assert_eq!(route(&req, false), Action::Notify);
     }
 
     #[test]
     fn unknown_method_with_id_is_an_error() {
         let req = json!({ "jsonrpc": "2.0", "id": 9, "method": "no/such/method" });
-        let Action::Respond(v) = route(&req) else {
+        let Action::Respond(v) = route(&req, false) else {
             panic!("expected Respond")
         };
         assert_eq!(v["error"]["code"], -32601);
@@ -482,7 +612,7 @@ mod tests {
             "jsonrpc": "2.0", "id": 10, "method": "tools/call",
             "params": { "name": "bogus", "arguments": {} }
         });
-        let Action::Respond(v) = route(&req) else {
+        let Action::Respond(v) = route(&req, false) else {
             panic!("expected Respond")
         };
         assert_eq!(v["result"]["isError"], true);
