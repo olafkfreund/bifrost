@@ -68,6 +68,47 @@ kubectl port-forward svc/bifrost-portal 8080:80
 
 ## Images
 
+### Pull a published image (ready to run)
+
+Tagged releases publish signed images to GHCR (built by `.github/workflows/release.yml`):
+
+```bash
+docker pull ghcr.io/olafkfreund/bifrost-api:latest
+docker pull ghcr.io/olafkfreund/bifrost-portal:latest
+```
+
+Point the Helm chart at them:
+
+```bash
+helm install bifrost deploy/helm/bifrost \
+  --set image.api.repository=ghcr.io/olafkfreund/bifrost-api \
+  --set image.portal.repository=ghcr.io/olafkfreund/bifrost-portal \
+  --set signingKey.value="$(openssl rand -hex 32)"
+```
+
+### Verify the signature and SBOM (supply-chain)
+
+Every published image is **signed with cosign (keyless / Sigstore)** and ships an
+**SPDX SBOM attestation** — no long-lived keys. Verify before you run, in an enterprise:
+
+```bash
+# 1. Verify the image was built by this repo's release workflow.
+cosign verify ghcr.io/olafkfreund/bifrost-api:latest \
+  --certificate-identity-regexp '^https://github.com/olafkfreund/bifrost/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+# 2. Verify + print the SBOM attestation (what's inside the image).
+cosign verify-attestation ghcr.io/olafkfreund/bifrost-api:latest \
+  --type spdxjson \
+  --certificate-identity-regexp '^https://github.com/olafkfreund/bifrost/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  | jq -r '.payload | @base64d | fromjson | .predicate' > bifrost-api.sbom.spdx.json
+```
+
+The SBOM is also attached to each workflow run as a build artifact.
+
+### Build locally (for testing / development)
+
 The Dockerfiles live in `deploy/docker/` and build from the **repo root**:
 
 ```bash

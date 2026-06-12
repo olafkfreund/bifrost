@@ -1,0 +1,121 @@
+name: Release (images · SBOM · signatures)
+
+# Build the API + portal container images, publish them to GHCR, generate an
+# SBOM for each, and sign both the images and the SBOM attestations with cosign
+# (keyless / Sigstore OIDC — no long-lived keys). Runs on a version tag, or
+# on-demand via workflow_dispatch.
+#
+# Verify a pulled image (see deploy/README.md for the full recipe):
+#   cosign verify ghcr.io/<owner>/bifrost-api:<tag> \
+#     --certificate-identity-regexp '^https://github.com/<owner>/bifrost/' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag to publish (e.g. v0.1.0 or a test tag)'
+        required: true
+        default: 'edge'
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write       # push images to GHCR
+  id-token: write       # cosign keyless signing via Sigstore OIDC
+
+jobs:
+  images:
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: bifrost-api
+            dockerfile: deploy/docker/api.Dockerfile
+          - image: bifrost-portal
+            dockerfile: deploy/docker/portal.Dockerfile
+    env:
+      REGISTRY: ghcr.io
+      IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image metadata (tags + labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=tag
+            type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=sha,format=long
+
+      - name: Build and push (linux/amd64)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
+          sbom: false   # we generate + attest the SBOM explicitly below
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign the image (keyless)
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "${IMAGE_NAME}@${DIGEST}"
+
+      - name: Generate SBOM (SPDX, syft)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: true
+
+      - name: Attest the SBOM (keyless)
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          cosign attest --yes \
+            --predicate sbom.spdx.json \
+            --type spdxjson \
+            "${IMAGE_NAME}@${DIGEST}"
+
+      - name: Summary
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "## ${{ matrix.image }}"
+            echo ""
+            echo "- Image: \`${IMAGE_NAME}@${DIGEST}\`"
+            echo "- Tags: ${{ steps.meta.outputs.tags }}"
+            echo "- Signed (cosign keyless) and SBOM-attested (SPDX)."
+          } >> "$GITHUB_STEP_SUMMARY"
