@@ -1,0 +1,36 @@
+# Backstage Software Catalog descriptor.
+# Register in Backstage via "Create > Register existing component" pointing at
+# this file's URL, or have the GitHub discovery provider pick it up automatically.
+# TechDocs builds from the root mkdocs.yml (techdocs-ref: dir:.).
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: bifrost
+  title: Bifrost
+  description: >-
+    Orchestration and intelligence layer over GitHub's official migration CLIs.
+    Azure DevOps, Jenkins, GitLab and more to GitHub Actions at portfolio scale:
+    semantically reviewed, human-approved, documented, and air-gap capable.
+  annotations:
+    backstage.io/techdocs-ref: dir:.
+    backstage.io/source-location: url:https://github.com/olafkfreund/bifrost
+    github.com/project-slug: olafkfreund/bifrost
+  tags:
+    - rust
+    - migration
+    - github-actions
+    - azure-devops
+    - llm
+    - air-gap
+  links:
+    - url: https://bitfrost.freundcloud.com
+      title: Documentation site
+      icon: docs
+    - url: https://github.com/olafkfreund/bifrost
+      title: Source
+      icon: github
+spec:
+  type: service
+  lifecycle: experimental
+  # Adjust to a Group or User that exists in your Backstage catalog.
+  owner: olafkfreund

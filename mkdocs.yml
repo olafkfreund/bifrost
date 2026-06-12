@@ -1,0 +1,21 @@
+# MkDocs config for Backstage TechDocs.
+#
+# This is a separate documentation source from the Jekyll site under /docs
+# (which powers the public GitHub Pages site and uses Liquid + just-the-docs).
+# TechDocs needs plain MkDocs-flavoured Markdown, so its pages live in /techdocs.
+site_name: Bifrost
+site_description: >-
+  Azure DevOps, Jenkins and GitLab to GitHub Actions migration at portfolio
+  scale: semantically reviewed, human-approved, air-gap capable.
+docs_dir: techdocs
+repo_url: https://github.com/olafkfreund/bifrost
+edit_uri: edit/main/techdocs/
+
+nav:
+  - Overview: index.md
+  - Architecture: architecture.md
+  - Getting started: getting-started.md
+  - Roadmap: roadmap.md
+
+plugins:
+  - techdocs-core
