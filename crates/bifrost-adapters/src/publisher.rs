@@ -170,6 +170,15 @@ impl GitHubPublisher {
 #[async_trait]
 impl Publisher for GitHubPublisher {
     async fn commit_workflow(&self, req: &CommitRequest) -> Result<CommitResult, PublishError> {
+        // Never write to the base/default branch: changes only ever land as a PR on
+        // a separate branch (review-first, #204).
+        if req.branch == req.base {
+            return Err(PublishError::Api(format!(
+                "refusing to commit to the base branch '{}' — converted workflows land on a \
+                 separate branch and open a pull request",
+                req.base
+            )));
+        }
         let base = &self.api_base;
         let repo = &req.repo;
 
@@ -250,6 +259,17 @@ mod tests {
             "https://github.com/olafkfreund/bifrost-sandbox/pull/MOCK"
         );
         assert_eq!(result.branch, "bifrost/convert-sarc-main");
+    }
+
+    /// The PR-only guard: committing to the base branch is refused before any HTTP
+    /// call, so a converted workflow can never be pushed to the default branch.
+    #[tokio::test]
+    async fn refuses_to_commit_to_the_base_branch() {
+        let publisher = GitHubPublisher::new("token");
+        let mut req = sample_req();
+        req.branch = req.base.clone(); // branch == base
+        let err = publisher.commit_workflow(&req).await.unwrap_err();
+        assert!(matches!(err, PublishError::Api(_)));
     }
 
     /// Live smoke test — creates a REAL branch + PR in `BIFROST_GH_REPO`. Ignored

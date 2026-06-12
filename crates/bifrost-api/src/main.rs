@@ -1021,6 +1021,33 @@ async fn providers(
     }))
 }
 
+/// `GET /api/report` (#204) — the pre-migration status report as Markdown, for
+/// sharing with stakeholders before any change. Read-only; generated from the
+/// current portfolio audit (no changes are made).
+async fn report(State(state): State<Shared>) -> Response {
+    let portfolio = state.portfolio.read().await.clone();
+    let md = bifrost_core::report_markdown(&portfolio);
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/markdown; charset=utf-8",
+        )],
+        md,
+    )
+        .into_response()
+}
+
+/// `GET /api/report.json` (#204) — the status report's headline stats + summary +
+/// the Markdown body, for the portal and automation.
+async fn report_json(State(state): State<Shared>) -> Json<Value> {
+    let portfolio = state.portfolio.read().await.clone();
+    Json(json!({
+        "stats": bifrost_core::report_stats(&portfolio),
+        "summary": portfolio.summary,
+        "markdown": bifrost_core::report_markdown(&portfolio),
+    }))
+}
+
 #[derive(Deserialize)]
 struct AirGapBody {
     enabled: bool,
@@ -1649,6 +1676,8 @@ fn app(state: Shared) -> Router {
         .route("/api/settings", get(get_settings))
         .route("/api/settings/air-gap", put(set_air_gap_setting))
         .route("/api/providers", get(providers))
+        .route("/api/report", get(report))
+        .route("/api/report.json", get(report_json))
         .route("/api/proposals/:id/runbook", patch(set_runbook_item))
         .route("/api/jobs/convert", post(start_convert_job))
         .route("/api/jobs/:id", get(job_status))

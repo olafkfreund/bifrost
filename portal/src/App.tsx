@@ -140,6 +140,28 @@ export default function App() {
                   </button>
                 ))}
               </div>
+
+              {/* pre-migration status report (#204) — review before any change */}
+              <button
+                onClick={() => {
+                  api
+                    .getReport()
+                    .then((md) => {
+                      const blob = new Blob([md], { type: 'text/markdown' })
+                      const url = URL.createObjectURL(blob)
+                      const a = document.createElement('a')
+                      a.href = url
+                      a.download = 'migration-status-report.md'
+                      a.click()
+                      URL.revokeObjectURL(url)
+                    })
+                    .catch((e) => setError(String(e)))
+                }}
+                title="Download a pre-migration status report — review before any change"
+                className="rounded-lg border border-ink-800 px-3 py-1.5 text-xs text-ink-200 transition hover:border-ink-600 hover:text-ink-100"
+              >
+                Status report
+              </button>
             </div>
           </div>
 
