@@ -101,6 +101,7 @@ platform-agnostic by adding two more sources beyond Azure DevOps.
 - First-run onboarding wizard (guided setup with live checks) — done
 - **Jenkins** source adapter (`SourceAdapter` over the JSON API) — done
 - **GitLab CI** source adapter (`SourceAdapter` over the v4 API) — done
+- **Bitbucket Pipelines** source adapter (`SourceAdapter` over the Cloud v2 API) — done
 - Source-adapter conformance suite (one contract, every platform) — done
 
 ---
@@ -110,8 +111,9 @@ platform-agnostic by adding two more sources beyond Azure DevOps.
 > attestation and an org audit pack — deployable via Docker Compose or Helm, with Entra ID SSO,
 > per-tenant isolation + RBAC, and least-privilege GitHub App auth. **M7** adds enterprise config
 > (secret-reference connections, per-tenant LLM routing, many orgs per tenant, an onboarding
-> wizard) and proves the source seam with **Jenkins** and **GitLab** adapters behind a shared
-> conformance suite — so Bifrost now bridges Azure DevOps, Jenkins, and GitLab to GitHub Actions.
+> wizard) and proves the source seam with **Jenkins**, **GitLab**, and **Bitbucket** adapters behind a
+> shared conformance suite — so Bifrost now bridges Azure DevOps, Jenkins, GitLab, and Bitbucket to
+> GitHub Actions.
 > Auth and multi-tenancy are opt-in, so the air-gapped single-box path is unchanged. Remaining work
 > is the **M0/M1** foundations tail (devcontainer, licence/CONTRIBUTING, fixture harness, forecast
 > wrap, version pinning, Entra-side ADO auth) and cross-cut hardening (prompt-eval harness, LLM
