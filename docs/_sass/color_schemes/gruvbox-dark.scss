@@ -1,0 +1,57 @@
+// Gruvbox Dark color scheme for just-the-docs.
+//
+// Extends the bundled `dark` scheme (so dark syntax highlighting and any
+// variables we don't override come along), then maps the surfaces, text, links,
+// and borders to the Gruvbox palette. Matches the portal's Gruvbox theme.
+// Palette: https://github.com/morhetz/gruvbox
+@import "./color_schemes/dark";
+
+// Gruvbox dark palette
+$gruvbox-bg0-h: #1d2021; // darkest — sidebar / search / code
+$gruvbox-bg0: #282828; // body background
+$gruvbox-bg0-s: #32302f; // raised surface (tables, buttons)
+$gruvbox-bg1: #3c3836; // borders
+$gruvbox-bg2: #504945;
+$gruvbox-fg0: #fbf1c7; // headings
+$gruvbox-fg1: #ebdbb2; // body text
+$gruvbox-fg3: #bdae93;
+$gruvbox-fg4: #a89984; // muted
+$gruvbox-blue: #83a598;
+$gruvbox-blue-d: #458588;
+$gruvbox-aqua: #8ec07c;
+$gruvbox-yellow: #fabd2f;
+$gruvbox-green: #b8bb26;
+$gruvbox-red: #fb4934;
+$gruvbox-orange: #fe8019;
+
+// Surfaces
+$body-background-color: $gruvbox-bg0;
+$sidebar-color: $gruvbox-bg0-h;
+$search-background-color: $gruvbox-bg0-h;
+$table-background-color: $gruvbox-bg0-s;
+$code-background-color: $gruvbox-bg0-h;
+$base-button-color: $gruvbox-bg0-s;
+$feedback-color: $gruvbox-bg0-s;
+
+// Text
+$body-text-color: $gruvbox-fg1;
+$body-heading-color: $gruvbox-fg0;
+$nav-child-link-color: $gruvbox-fg3;
+$search-result-preview-color: $gruvbox-fg4;
+
+// Accents
+$link-color: $gruvbox-blue;
+$btn-primary-color: $gruvbox-blue-d;
+$border-color: $gruvbox-bg1;
+
+// Callout / label accents reuse the Gruvbox brights so admonitions read on dark.
+$blue-000: $gruvbox-blue;
+$green-000: $gruvbox-green;
+$yellow-000: $gruvbox-yellow;
+$red-000: $gruvbox-red;
+
+body {
+  // The portal pairs this palette with GitHub's Mona Sans; mirror the spirit
+  // here with a clean grotesque, falling back to the system stack.
+  --gruvbox-accent: #{$gruvbox-aqua};
+}
