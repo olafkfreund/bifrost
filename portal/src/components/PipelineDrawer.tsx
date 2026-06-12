@@ -1,12 +1,13 @@
+import { useEffect } from 'react'
 import type { Pipeline } from '../types'
 import { riskMeta, statusLabel, pct } from '../lib/format'
 import { RiskBadge } from './RiskBadge'
 
 function Stat({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <div className="rounded-lg border border-ink-800 bg-ink-850 p-3">
+    <div className="bf-card rounded-lg p-3">
       <div className="text-[11px] uppercase tracking-wide text-ink-300">{label}</div>
-      <div className="mt-0.5 text-lg font-semibold text-ink-100">{value}</div>
+      <div className="tnum mt-0.5 font-display text-lg font-semibold text-ink-100">{value}</div>
     </div>
   )
 }
@@ -20,14 +21,23 @@ export function PipelineDrawer({
   onClose: () => void
   onOpenProposal: (pipeline: Pipeline) => void
 }) {
+  useEffect(() => {
+    if (!pipeline) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [pipeline, onClose])
+
   if (!pipeline) return null
   const p = pipeline
   const maxContribution = Math.max(...p.factors.map((f) => f.contribution), 1)
 
   return (
     <div className="fixed inset-0 z-40 flex justify-end">
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <aside className="relative z-50 flex h-full w-full max-w-md flex-col border-l border-ink-800 bg-ink-900 shadow-2xl">
+      <div className="bf-scrim" onClick={onClose} />
+      <aside className="bf-drawer relative z-50 flex h-full w-full max-w-md flex-col">
         <div className="flex items-start justify-between border-b border-ink-800 p-5">
           <div>
             <div className="text-xs text-ink-300">{p.project}</div>

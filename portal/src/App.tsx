@@ -125,7 +125,7 @@ export default function App() {
                 <select
                   value={orgFilter}
                   onChange={(e) => setOrgFilter(e.target.value)}
-                  className="rounded-lg border border-ink-800 bg-ink-900 px-3 py-1.5 text-xs text-ink-100"
+                  className="bf-field px-3 py-1.5 text-xs"
                   title="Filter by source org"
                 >
                   <option value="all">All orgs ({orgs.length})</option>

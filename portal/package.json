@@ -10,6 +10,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@fontsource-variable/hubot-sans": "^5.2.8",
+    "@fontsource-variable/jetbrains-mono": "^5.2.8",
+    "@fontsource-variable/mona-sans": "^5.2.8",
     "@monaco-editor/react": "^4.7.0",
     "monaco-editor": "^0.54.0",
     "react": "^19.2.6",

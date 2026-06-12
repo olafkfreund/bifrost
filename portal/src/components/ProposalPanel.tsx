@@ -113,6 +113,16 @@ export function ProposalPanel({
     [],
   )
 
+  // Esc closes the dialog (expected of any modal; keyboard-first reviewers).
+  useEffect(() => {
+    if (!pipeline) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [pipeline, onClose])
+
   // (Re)apply provenance highlighting, reusing one collection so edits refresh
   // it rather than stacking stale decorations.
   const applyProvenance = (diff: editor.IStandaloneDiffEditor) => {
@@ -177,8 +187,8 @@ export function ProposalPanel({
 
   return (
     <div className="fixed inset-0 z-50 flex">
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div className="relative z-[60] m-auto flex h-[92vh] w-[96vw] max-w-[1500px] flex-col overflow-hidden rounded-xl border border-ink-800 bg-ink-900 shadow-2xl">
+      <div className="bf-scrim" onClick={onClose} />
+      <div className="bf-dialog relative z-[60] m-auto flex h-[92vh] w-[96vw] max-w-[1500px] flex-col overflow-hidden rounded-xl">
         {/* header */}
         <div className="flex items-start justify-between border-b border-ink-800 p-5">
           <div>
@@ -291,10 +301,10 @@ export function ProposalPanel({
                   <p className="whitespace-pre-wrap text-sm text-ink-200">{proposal.rationale || '—'}</p>
                 </Section>
 
-                {proposal.riskFlags.length > 0 && (
+                {[...new Set(proposal.riskFlags)].length > 0 && (
                   <Section title="Risk flags" hint="reviewer must check">
                     <ul className="space-y-1.5">
-                      {proposal.riskFlags.map((f, i) => (
+                      {[...new Set(proposal.riskFlags)].map((f, i) => (
                         <li key={i} className="flex gap-2 text-sm text-ink-200">
                           <span className="text-[var(--color-risk-amber)]">▲</span>
                           {f}
@@ -304,10 +314,10 @@ export function ProposalPanel({
                   </Section>
                 )}
 
-                {proposal.verifySteps.length > 0 && (
+                {[...new Set(proposal.verifySteps)].length > 0 && (
                   <Section title="Verify before approving">
                     <ul className="space-y-1.5">
-                      {proposal.verifySteps.map((s, i) => (
+                      {[...new Set(proposal.verifySteps)].map((s, i) => (
                         <li key={i} className="flex gap-2 text-sm text-ink-200">
                           <span className="text-ink-500">○</span>
                           {s}
