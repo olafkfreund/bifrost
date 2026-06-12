@@ -1,7 +1,7 @@
 ---
 title: Golden path
 layout: default
-nav_order: 4
+nav_order: 5
 permalink: /golden-path
 description: "How Bifrost maps to GitHub's documented golden path for Azure DevOps to GitHub Actions migration — and where it goes further."
 ---

@@ -11,6 +11,10 @@ color_scheme: gruvbox-dark
 search_enabled: true
 heading_anchors: true
 
+# Render ```mermaid fenced blocks as diagrams (architecture + flowcharts).
+mermaid:
+  version: "10.9.0"
+
 aux_links:
   "GitHub":
     - "https://github.com/olafkfreund/bifrost"
