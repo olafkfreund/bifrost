@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- Bifrost: the rainbow bridge (Bifrost) on a Gruvbox-dark ground. -->
+  <rect width="32" height="32" rx="7" fill="#282828"/>
+  <g fill="none" stroke-linecap="round">
+    <path d="M5 23 A11 11 0 0 1 27 23" stroke="#fb4934" stroke-width="2.4"/>
+    <path d="M7 23 A9 9 0 0 1 25 23" stroke="#fe8019" stroke-width="2.4"/>
+    <path d="M9 23 A7 7 0 0 1 23 23" stroke="#fabd2f" stroke-width="2.4"/>
+    <path d="M11 23 A5 5 0 0 1 21 23" stroke="#b8bb26" stroke-width="2.4"/>
+    <path d="M13 23 A3 3 0 0 1 19 23" stroke="#83a598" stroke-width="2.4"/>
+  </g>
+  <!-- bridge deck -->
+  <rect x="4.5" y="23" width="23" height="2.4" rx="1.2" fill="#ebdbb2"/>
+</svg>

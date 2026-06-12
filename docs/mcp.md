@@ -1,7 +1,7 @@
 ---
 title: Bifrost in your editor (MCP)
 layout: default
-nav_order: 6
+nav_order: 7
 permalink: /mcp
 description: "Use the Bifrost MCP server from VS Code, Cursor or any MCP client — query the migration portfolio and (next) convert a pipeline to a GitHub Actions workflow without leaving the editor."
 ---
@@ -114,6 +114,48 @@ setup mistake.
 
 The same server works in Cursor and Claude Desktop; only the config key differs
 (`mcpServers`).
+
+## Other IDEs
+
+`bifrost-mcp` is a standard stdio MCP server, so any MCP-capable client can use it. The only
+differences are the file location and the top-level key.
+
+### Cursor
+
+`.cursor/mcp.json` in the workspace (or `~/.cursor/mcp.json` for all projects). Key is
+**`mcpServers`**:
+
+```json
+{
+  "mcpServers": {
+    "bifrost": {
+      "command": "/abs/path/to/target/debug/bifrost-mcp",
+      "env": { "BIFROST_API_URL": "http://127.0.0.1:8080" }
+    }
+  }
+}
+```
+
+Then enable the server in Cursor's MCP settings and use it from the agent (Composer).
+
+### Claude Desktop
+
+Edit `claude_desktop_config.json` (`~/Library/Application Support/Claude/` on macOS,
+`%APPDATA%/Claude/` on Windows), same **`mcpServers`** shape as Cursor, and restart the app.
+Bifrost's tools appear in the tools menu.
+
+### JetBrains (IntelliJ, Rider, PyCharm, WebStorm, …)
+
+Use **JetBrains AI Assistant's MCP client** (Settings → Tools → AI Assistant → Model Context
+Protocol → add server), pointed at the `bifrost-mcp` binary as a stdio command with
+`BIFROST_API_URL` in the environment. (Note: the *JetBrains MCP server* feature is the
+reverse — it exposes the IDE to outside clients; to consume Bifrost you want the AI Assistant
+**client** side.)
+
+{: .note }
+> Whatever the client, the server is the same binary and the same review-first guarantees
+> apply: context tools are read-only, `convert` produces a proposal, and `commit` stays
+> triple-gated (`BIFROST_MCP_COMMIT`, human approval, `BIFROST_COMMIT_LIVE`).
 
 ---
 
