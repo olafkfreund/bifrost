@@ -8,6 +8,7 @@ import type {
   Pipeline,
   Portfolio,
   ProposalStatus,
+  ReadinessItem,
   SecretRefView,
   SourceStats,
 } from '../types'
@@ -55,6 +56,8 @@ export interface BifrostApi {
   getForecast(): Promise<Forecast>
   /** Source (Azure DevOps) assessment statistics (#240). */
   getSourceStats(): Promise<SourceStats>
+  /** Target GitHub pre-flight readiness checklist (#239). */
+  getReadiness(): Promise<ReadinessItem[]>
   /** Migration completeness matrix — every ADO moving part + its status (#238). */
   getCompleteness(): Promise<CompletenessRow[]>
   /** Ask the grounded migration assistant a question (#252). Query-only. */
@@ -417,6 +420,27 @@ class MockBifrostApi implements BifrostApi {
       ],
     }
   }
+  async getReadiness(): Promise<ReadinessItem[]> {
+    // Representative checklist mirroring `bifrost_core::readiness` over the demo audit.
+    const i = (
+      category: string,
+      status: ReadinessItem['status'],
+      detail: string,
+      action: string,
+    ): ReadinessItem => ({ category, status, detail, action })
+    return [
+      i('Identity & SSO', 'unverified', 'SAML/OIDC SSO and SCIM provisioning must be configured for the target org.', 'Confirm SSO + SCIM in the GitHub enterprise/org settings.'),
+      i('Actions runners', 'action', '1 self-hosted runner referenced; size GitHub runners to the forecast peak concurrency.', 'Provision runners/runner-groups and match the labels the workflows expect.'),
+      i('Actions policy', 'action', '4 actions the converted workflows use must be allowed.', 'Add them to the org Actions allow-list (pin to SHAs for supply-chain safety).'),
+      i('OIDC federation', 'action', '2 service connections need OIDC/Entra workload-identity federation.', "Configure federated credentials. Note: GitHub's OIDC sub claim format changes for repos created after 2026-07-15."),
+      i('Secret management', 'action', '3 secrets to create (names only — values are never read).', 'Create them as Actions secrets at the right scope (repo/env/org).'),
+      i('Variables', 'action', '2 variable groups to recreate.', 'Recreate as repo/org/environment variables; ADO stage-scoped variables have no direct equivalent.'),
+      i('Branch rulesets', 'unverified', 'Branch protection (required reviews, status checks, no force-push) should be defined before import.', 'Define org/repo rulesets; note rulesets can block a migration if they conflict.'),
+      i('Ownership / RACI', 'unverified', 'Assign an owner per project (5 projects) and a change board.', 'Confirm ownership; owning team per pipeline is not yet collected (see Assessment).'),
+      i('Rollback plan', 'unverified', 'A documented rollback is required before cutover.', 'Keep Azure DevOps live ~30 days post-cutover; document how to revert.'),
+      i('Egress posture', 'ready', 'Air-gap is ON — only in-network providers are used; no pipeline data leaves the box.', 'Confirm the egress posture matches your compliance requirement.'),
+    ]
+  }
   async getCompleteness(): Promise<CompletenessRow[]> {
     // Representative matrix mirroring `bifrost_core::completeness` over the demo
     // portfolio. Not-yet-inventoried categories are shown honestly, never omitted.
@@ -714,6 +738,11 @@ class HttpBifrostApi implements BifrostApi {
     const res = await fetch(`${this.base}/source-stats`, { headers: this.headers() })
     if (!res.ok) throw new Error(`source-stats request failed: ${res.status}`)
     return (await res.json()) as SourceStats
+  }
+  async getReadiness(): Promise<ReadinessItem[]> {
+    const res = await fetch(`${this.base}/readiness`, { headers: this.headers() })
+    if (!res.ok) throw new Error(`readiness request failed: ${res.status}`)
+    return (await res.json()) as ReadinessItem[]
   }
   async getCompleteness(): Promise<CompletenessRow[]> {
     const res = await fetch(`${this.base}/completeness`, { headers: this.headers() })

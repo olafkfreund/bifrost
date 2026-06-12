@@ -248,6 +248,17 @@ export interface SourceStats {
   uncollected: string[]
 }
 
+/** Status of a target-readiness checklist item (#239). */
+export type ReadinessStatus = 'ready' | 'action' | 'unverified' | 'blocked'
+
+/** One target GitHub pre-flight checklist item (#239). */
+export interface ReadinessItem {
+  category: string
+  status: ReadinessStatus
+  detail: string
+  action: string
+}
+
 /** Status of one migration category in the completeness matrix (#238). */
 export type CategoryStatus = 'auto' | 'review' | 'manual' | 'notInventoried' | 'notApplicable'
 
