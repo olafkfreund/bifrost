@@ -1306,7 +1306,7 @@ async fn run_conversion(
     use bifrost_adapters::{DockerImporter, Importer};
     use bifrost_llm::{
         AnthropicProvider, AzureOpenAiProvider, CopilotProvider, GeminiProvider, LlmProvider,
-        OllamaProvider, OpenAiCompatibleProvider,
+        OllamaProvider, OpenAiCompatibleProvider, VertexProvider,
     };
 
     let truthy = |v: String| matches!(v.as_str(), "1" | "true" | "yes");
@@ -1344,6 +1344,12 @@ async fn run_conversion(
     let azure_openai = (live && std::env::var("AZURE_OPENAI_ENDPOINT").is_ok())
         .then(AzureOpenAiProvider::from_env)
         .and_then(Result::ok);
+    // GCP Vertex AI (enterprise GCP): gated on project + token. Its own is_local
+    // flag (VERTEX_PRIVATE) decides air-gap eligibility.
+    let vertex =
+        (live && std::env::var("VERTEX_PROJECT").is_ok() && std::env::var("VERTEX_TOKEN").is_ok())
+            .then(VertexProvider::from_env)
+            .and_then(Result::ok);
     let mock_llm = MockLlmProvider;
 
     let live_llm = anthropic.is_some()
@@ -1351,7 +1357,8 @@ async fn run_conversion(
         || copilot.is_some()
         || ollama.is_some()
         || openai_compat.is_some()
-        || azure_openai.is_some();
+        || azure_openai.is_some()
+        || vertex.is_some();
     let mut providers: Vec<&dyn LlmProvider> = Vec::new();
     if let Some(a) = anthropic.as_ref() {
         providers.push(a);
@@ -1370,6 +1377,9 @@ async fn run_conversion(
     }
     if let Some(az) = azure_openai.as_ref() {
         providers.push(az);
+    }
+    if let Some(vx) = vertex.as_ref() {
+        providers.push(vx);
     }
     let policy = if live_llm {
         // The tenant's saved routing policy (#158) wins; else the env default.
