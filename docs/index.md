@@ -45,7 +45,7 @@ conversion, one pipeline at a time. Bifrost owns the part nobody else does well:
 | **Deterministic risk** | Risk scoring is computed from explainable factors, not the LLM. The model **explains; it does not score**. |
 | **Grounded generation** | Every LLM request carries the source snippet + the Importer's output + the specific failure. The model fills the gap from that diff — never converts from scratch. |
 | **Attestation-native** | Every decision — who approved what, what changed, why, the validation result — is a signed, exportable attestation. |
-| **Platform-agnostic** | The source adapter is an interface. Azure DevOps, Jenkins, and GitLab are implemented today; Bamboo and others follow. |
+| **Platform-agnostic** | The source adapter is an interface. Azure DevOps, Jenkins, GitLab, and Bitbucket are implemented today; Bamboo and others follow. |
 
 ## How it works
 
@@ -56,8 +56,8 @@ CONTROL PLANE (Rust/axum)   job state machine · conversion orchestrator ·
       │                     deterministic risk model · attestation + audit log
       │ LlmProvider trait → Anthropic · Gemini · Copilot/Models · Ollama (air-gap)
       ▼ shell-out (Docker)            ▼ HTTP
-INGESTION ADAPTERS          EXTERNAL: ADO / Jenkins / GitLab APIs · GitHub API · GEI
-  gh actions-importer (Docker) · SourceAdapter trait (ADO · Jenkins · GitLab → …)
+INGESTION ADAPTERS          EXTERNAL: ADO / Jenkins / GitLab / Bitbucket APIs · GitHub API · GEI
+  gh actions-importer (Docker) · SourceAdapter trait (ADO · Jenkins · GitLab · Bitbucket → …)
 ```
 
 The **core loop**, per pipeline: Importer `dry-run` → parse the log for unsupported steps,
@@ -80,7 +80,7 @@ projects, and validation, attestation, and deployment are in place — **M2–M6
 | **M4** Commit + PR — push/migrate, runbooks, PR automation | Done |
 | **M5** Validation — sandbox trigger, run capture, parity diff | Done |
 | **M6** Compliance + Deploy — attestation, audit pack, App auth, packaging, SSO, multi-tenancy + RBAC | Done |
-| **M7** Enterprise config + multi-source — secret-ref connections, LLM routing, many orgs, onboarding wizard, Jenkins + GitLab adapters | Done |
+| **M7** Enterprise config + multi-source — secret-ref connections, LLM routing, many orgs, onboarding wizard, Jenkins + GitLab + Bitbucket adapters | Done |
 
 Today you can audit a portfolio, convert a pipeline (real Importer dry-run + grounded LLM
 gap-fill, air-gap capable), review and approve it in the portal, open a PR, trigger the converted
@@ -88,7 +88,7 @@ workflow in a sandbox, diff its run against the ADO baseline, and export a **sig
 and a per-org **audit pack** — all deployable via Docker Compose or Helm, with **Entra ID SSO**,
 **per-tenant isolation + RBAC**, and a least-privilege **GitHub App**. Auth and multi-tenancy are
 opt-in, so the air-gapped single-box path stays simple. Sources now span **Azure DevOps, Jenkins,
-and GitLab** behind one conformance-tested adapter seam. The core platform (M2–M7) is complete;
+GitLab, and Bitbucket** behind one conformance-tested adapter seam. The core platform (M2–M7) is complete;
 remaining work is the M0/M1 foundations tail.
 
 [See the full roadmap](roadmap){: .btn .btn-outline }
