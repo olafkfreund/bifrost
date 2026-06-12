@@ -6,6 +6,7 @@ members = [
     "crates/bifrost-llm",
     "crates/bifrost-api",
     "crates/bifrost-cli",
+    "crates/bifrost-mcp",
 ]
 
 [workspace.package]
