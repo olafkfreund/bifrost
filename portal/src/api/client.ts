@@ -7,6 +7,7 @@ import type {
   JobProgress,
   Pipeline,
   Portfolio,
+  ProgramBoardPlan,
   ProjectCoordination,
   ProposalStatus,
   ReadinessItem,
@@ -60,6 +61,8 @@ export interface BifrostApi {
   getProgram(): Promise<WavePlan[]>
   /** Per-project repo + pipeline coordination (#245). */
   getGeiCoordination(): Promise<ProjectCoordination[]>
+  /** Dry-run plan of the GitHub Projects program board (#265). */
+  getProgramBoardPlan(): Promise<ProgramBoardPlan>
   /** The `.github/copilot-instructions.md` for migrated repos (#243). */
   getAgentInstructions(): Promise<string>
   /** Source (Azure DevOps) assessment statistics (#240). */
@@ -451,6 +454,77 @@ class MockBifrostApi implements BifrostApi {
       }
     })
   }
+  async getProgramBoardPlan(): Promise<ProgramBoardPlan> {
+    // Mirrors `bifrost_core::program_board_plan` over the demo portfolio.
+    const slug = (s: string) =>
+      s
+        .split('')
+        .map((c) => (/[a-z0-9]/i.test(c) ? c.toLowerCase() : '-'))
+        .join('')
+        .replace(/^-+|-+$/g, '')
+    const org = mockPortfolio.summary.org
+    const pipes = mockPortfolio.pipelines.map((p) => this.overlay(p))
+    const waveOf = (p: Pipeline) =>
+      p.classification === 'classic' || p.riskBand === 'red' ? 3 : p.riskBand === 'green' ? 1 : 2
+    const statusLabel: Record<string, string> = {
+      not_started: 'Not started',
+      draft: 'Draft',
+      in_review: 'In review',
+      changes_requested: 'Changes requested',
+      approved: 'Approved',
+      committed: 'Committed',
+      validated: 'Validated',
+    }
+    const checklist = [
+      'Review the converted workflow (three-pane diff)',
+      'Create the required GitHub Actions secrets',
+      'Federate service connections to GitHub via OIDC',
+      'Provision/label any self-hosted runners',
+      'Validate the workflow in a sandbox (parity)',
+      'Approve and merge the pull request',
+    ]
+    const issues = pipes.map((p) => ({
+      title: `Migrate ${p.project} · ${p.name}`,
+      wave: waveOf(p),
+      risk: p.riskBand.charAt(0).toUpperCase() + p.riskBand.slice(1),
+      status: statusLabel[p.status] ?? p.status,
+      forecastMinutes: p.forecastMinutes,
+      subIssues: checklist,
+    }))
+    const count = (pred: (p: Pipeline) => boolean) => pipes.filter(pred).length
+    const total = pipes.length
+    const migrated = count((p) => p.status === 'committed' || p.status === 'validated')
+    return {
+      repo: `${slug(org)}-migration-program`,
+      projectTitle: `${org} — ADO to GitHub Actions migration`,
+      fields: [
+        {
+          name: 'Status',
+          dataType: 'single-select',
+          options: ['Not started', 'Draft', 'In review', 'Changes requested', 'Approved', 'Committed', 'Validated'],
+        },
+        { name: 'Wave', dataType: 'single-select', options: ['Pilot', 'Early majority', 'Late majority'] },
+        { name: 'Risk', dataType: 'single-select', options: ['Green', 'Amber', 'Red'] },
+        { name: 'Forecast minutes', dataType: 'number', options: [] },
+        { name: 'Target date', dataType: 'date', options: [] },
+      ],
+      issues,
+      kpis: {
+        total,
+        migrated,
+        validated: count((p) => p.status === 'validated'),
+        inProgress: count((p) => p.status === 'draft' || p.status === 'in_review' || p.status === 'changes_requested'),
+        notStarted: count((p) => p.status === 'not_started'),
+        percentDone: total > 0 ? Math.floor((migrated * 100) / total) : 0,
+        forecastMinutes: mockPortfolio.summary.totals.forecastMinutes,
+      },
+      notes: [
+        'This is a dry-run plan — nothing is created on GitHub until you approve provisioning.',
+        'Provisioning creates an org-level Project + a dedicated repo for the issues; it is idempotent and appended to the attestation log.',
+        'Board/roadmap views and Insights are configured once in the GitHub UI; Bifrost sets the fields that drive them.',
+      ],
+    }
+  }
   async getSourceStats(): Promise<SourceStats> {
     const t = mockPortfolio.summary.totals
     const ps = mockPortfolio.pipelines
@@ -815,6 +889,11 @@ class HttpBifrostApi implements BifrostApi {
     const res = await fetch(`${this.base}/gei`, { headers: this.headers() })
     if (!res.ok) throw new Error(`gei request failed: ${res.status}`)
     return (await res.json()) as ProjectCoordination[]
+  }
+  async getProgramBoardPlan(): Promise<ProgramBoardPlan> {
+    const res = await fetch(`${this.base}/program-board/plan`, { headers: this.headers() })
+    if (!res.ok) throw new Error(`program-board plan request failed: ${res.status}`)
+    return (await res.json()) as ProgramBoardPlan
   }
   async getAgentInstructions(): Promise<string> {
     const res = await fetch(`${this.base}/copilot-instructions`, { headers: this.headers() })

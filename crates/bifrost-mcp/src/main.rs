@@ -60,6 +60,12 @@ const API_TOOLS: &[ApiTool] = &[
         project_arg: false,
     },
     ApiTool {
+        name: "bifrost_program_board",
+        description: "The deterministic dry-run plan of the GitHub Projects program board: the dedicated issues repo, the org Project + its custom fields, one planned issue per pipeline (with the migration checklist as sub-issues), and the KPIs. Nothing is created on GitHub — provisioning is a separate, approval-gated step.",
+        path: "/api/program-board/plan",
+        project_arg: false,
+    },
+    ApiTool {
         name: "bifrost_report",
         description: "The pre-migration status report (Markdown), optionally scoped to one project via the `project` argument.",
         path: "/api/report",

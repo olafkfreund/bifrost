@@ -257,6 +257,53 @@ export interface ProjectCoordination {
   repoStatus: 'pendingInventory'
 }
 
+/** A custom field Bifrost would create on the GitHub Project (#265). */
+export interface BoardField {
+  name: string
+  /** GraphQL field data type: `single-select`, `number`, or `date`. */
+  dataType: string
+  /** Options for a single-select field (empty otherwise). */
+  options: string[]
+}
+
+/** One issue the program board would carry — one per pipeline (#265). */
+export interface PlannedIssue {
+  title: string
+  wave: number
+  risk: string
+  status: string
+  forecastMinutes: number
+  /** The migration checklist, as sub-issues. */
+  subIssues: string[]
+}
+
+/** Bifrost-computed program KPIs (Projects Insights is UI-only) (#265). */
+export interface BoardKpis {
+  total: number
+  /** Committed or validated. */
+  migrated: number
+  validated: number
+  /** Draft / in-review / changes-requested. */
+  inProgress: number
+  notStarted: number
+  percentDone: number
+  forecastMinutes: number
+}
+
+/**
+ * The deterministic, dry-run plan of the GitHub Projects board Bifrost would
+ * stand up for the migration program (#265). Nothing is created on GitHub until
+ * provisioning is approved (a separate, gated step).
+ */
+export interface ProgramBoardPlan {
+  repo: string
+  projectTitle: string
+  fields: BoardField[]
+  issues: PlannedIssue[]
+  kpis: BoardKpis
+  notes: string[]
+}
+
 /** One migration wave with its cohort facts + progress (#242). */
 export interface WavePlan {
   wave: number

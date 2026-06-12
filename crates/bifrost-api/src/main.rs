@@ -1176,6 +1176,18 @@ async fn gei_handler(State(state): State<Shared>) -> Json<Vec<bifrost_core::Proj
     Json(bifrost_core::gei_coordination(&portfolio))
 }
 
+/// `GET /api/program-board/plan` (#265) — the deterministic, **dry-run** plan of
+/// the GitHub Projects board Bifrost would stand up: the dedicated repo, the org
+/// Project, its custom fields, one issue per pipeline (with the migration
+/// checklist as sub-issues), and the KPIs. No GitHub writes — provisioning is a
+/// separate, approval-gated step (#266).
+async fn program_board_plan_handler(
+    State(state): State<Shared>,
+) -> Json<bifrost_core::ProgramBoardPlan> {
+    let portfolio = state.portfolio.read().await.clone();
+    Json(bifrost_core::program_board_plan(&portfolio))
+}
+
 async fn completeness_handler(
     State(state): State<Shared>,
 ) -> Json<Vec<bifrost_core::CompletenessRow>> {
@@ -2048,6 +2060,7 @@ fn app(state: Shared) -> Router {
         .route("/api/readiness", get(readiness_handler))
         .route("/api/program", get(program_handler))
         .route("/api/gei", get(gei_handler))
+        .route("/api/program-board/plan", get(program_board_plan_handler))
         .route("/api/completeness", get(completeness_handler))
         .route("/api/chat", post(chat_handler))
         .route(

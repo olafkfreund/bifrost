@@ -4,6 +4,7 @@ type Page =
   | 'forecast'
   | 'completeness'
   | 'program'
+  | 'board'
   | 'review'
   | 'connections'
   | 'routing'
@@ -47,6 +48,12 @@ const ICONS: Record<Page, React.ReactNode> = {
       <path d="M2 17l10 5 10-5M2 12l10 5 10-5" />
     </svg>
   ),
+  board: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <path d="M9 3v18M15 3v18" />
+    </svg>
+  ),
   review: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M9 11l3 3L22 4" />
@@ -87,6 +94,7 @@ const GROUPS: { label: string; items: { id: Page; label: string }[] }[] = [
     { id: 'forecast', label: 'Forecast' },
     { id: 'completeness', label: 'Coverage' },
     { id: 'program', label: 'Program' },
+    { id: 'board', label: 'Board' },
     { id: 'review', label: 'Review' },
   ] },
   { label: 'Settings', items: [
