@@ -321,17 +321,27 @@ async fn convert(
         .flatten();
     let llm_conns =
         resolve_tenant_llm(state.store.as_ref(), state.secrets.as_ref(), &caller.tenant).await;
-    let outcome =
-        match run_conversion(&id, project.as_deref(), policy, state.air_gap(), &llm_conns).await {
-            Ok(outcome) => {
-                state.metrics.inc_conversion(true);
-                outcome
-            }
-            Err(e) => {
-                state.metrics.inc_conversion(false);
-                return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
-            }
-        };
+    // A non-ADO pipeline converts via its source connection's Importer (#210).
+    let source_importer = resolve_source_importer(&state, &caller.tenant, &id).await;
+    let outcome = match run_conversion(
+        &id,
+        project.as_deref(),
+        policy,
+        state.air_gap(),
+        &llm_conns,
+        source_importer,
+    )
+    .await
+    {
+        Ok(outcome) => {
+            state.metrics.inc_conversion(true);
+            outcome
+        }
+        Err(e) => {
+            state.metrics.inc_conversion(false);
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+        }
+    };
     // Per-job LLM token/cost accounting (#104) — surfaced on the response for cost
     // control. Captured before the proposal/runbook are moved into the record.
     let cost = outcome.cost;
@@ -1543,6 +1553,49 @@ pub(crate) async fn resolve_tenant_llm(
     out
 }
 
+/// Build the Importer for a pipeline's **source** (#210), or `None` for an Azure
+/// DevOps pipeline (the caller then uses the ADO path). The pipeline's portfolio
+/// `org` tag (`platform:namespace`, #209) names its source; we find the tenant's
+/// matching `Source` connection, resolve its secret, and build a source Importer.
+async fn resolve_source_importer(
+    state: &AppState,
+    tenant: &str,
+    pipeline_id: &str,
+) -> Option<Box<dyn bifrost_adapters::Importer>> {
+    let org = {
+        let portfolio = state.portfolio.read().await;
+        portfolio
+            .pipelines
+            .iter()
+            .find(|p| p.id == pipeline_id)
+            .map(|p| p.org.clone())?
+    };
+    let (platform, namespace) = org.split_once(':')?;
+    let conns = state.store.list_connections(tenant).await.ok()?;
+    for c in &conns {
+        if let ConnectionKind::Source {
+            platform: cp,
+            base_url,
+            auth,
+            username,
+        } = &c.kind
+        {
+            if cp == platform {
+                let secret = state.secrets.resolve(auth).await.ok()?;
+                return bifrost_adapters::DockerImporter::for_source(
+                    platform,
+                    base_url.as_deref(),
+                    Some(namespace),
+                    username.as_deref(),
+                    &secret,
+                )
+                .map(|d| Box::new(d) as Box<dyn bifrost_adapters::Importer>);
+            }
+        }
+    }
+    None
+}
+
 /// Construct an [`LlmProvider`](bifrost_llm::LlmProvider) from a resolved
 /// connection. `None` when the family is unknown or a required field is missing
 /// (e.g. a key for a frontier, or a base URL for a local endpoint).
@@ -1583,6 +1636,7 @@ async fn run_conversion(
     policy_override: Option<RoutingPolicy>,
     air_gap: bool,
     llm_conns: &[ResolvedLlm],
+    source_importer: Option<Box<dyn bifrost_adapters::Importer>>,
 ) -> Result<ConversionOutcome, bifrost_adapters::ConversionError> {
     use bifrost_adapters::{DockerImporter, Importer};
     use bifrost_llm::{
@@ -1690,9 +1744,10 @@ async fn run_conversion(
     };
     let router = LlmRouter::new(providers, air_gap).with_policy(policy);
 
-    // Real Importer when live + a project (the pipeline's, else BIFROST_PROJECT)
-    // + ADO org are configured; else the mock.
-    let docker = live
+    // Importer precedence: a caller-supplied source Importer (a non-ADO source,
+    // #210) wins; else the ADO Docker importer when live + project + ADO org are
+    // configured; else the mock.
+    let docker = (source_importer.is_none() && live)
         .then(|| {
             project
                 .map(str::to_string)
@@ -1701,9 +1756,12 @@ async fn run_conversion(
         .flatten()
         .and_then(|p| DockerImporter::from_env(p).ok());
     let mock_importer = MockImporter;
-    let importer: &dyn Importer = match docker.as_ref() {
-        Some(d) => d,
-        None => &mock_importer,
+    let importer: &dyn Importer = if let Some(si) = source_importer.as_deref() {
+        si
+    } else if let Some(d) = docker.as_ref() {
+        d
+    } else {
+        &mock_importer
     };
 
     tracing::info!(
@@ -1989,7 +2047,7 @@ mod tests {
 
     #[tokio::test]
     async fn conversion_helper_produces_a_draft_proposal_and_runbook() {
-        let outcome = run_conversion("SARC-main", None, None, false, &[])
+        let outcome = run_conversion("SARC-main", None, None, false, &[], None)
             .await
             .expect("offline conversion succeeds");
         assert_eq!(outcome.proposal.status, ProposalStatus::Draft);

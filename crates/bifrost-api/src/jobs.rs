@@ -194,7 +194,8 @@ async fn convert_one(
         };
     }
     let policy = store.get_routing_policy(tenant).await.ok().flatten();
-    match crate::run_conversion(pipeline_id, project, policy, air_gap, llm_conns).await {
+    // Bulk jobs use the ADO importer path; per-source bulk conversion is a follow-up.
+    match crate::run_conversion(pipeline_id, project, policy, air_gap, llm_conns, None).await {
         Ok(outcome) => {
             let rec = StoredProposal {
                 proposal: outcome.proposal,
