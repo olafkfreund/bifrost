@@ -42,6 +42,9 @@ services:
       AZURE_CLIENT_ID: ${AZURE_CLIENT_ID:-}
       AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET:-}
       RUST_LOG: ${RUST_LOG:-bifrost_api=info,tower_http=info}
+      # Observability (#105): set BIFROST_LOG_JSON=1 for structured JSON logs
+      # (for log pipelines). Prometheus metrics are always at GET /metrics.
+      BIFROST_LOG_JSON: ${BIFROST_LOG_JSON:-}
     volumes:
       - bifrost-data:/data
     expose:

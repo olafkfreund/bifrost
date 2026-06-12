@@ -10,6 +10,7 @@
 
 mod auth;
 mod jobs;
+mod metrics;
 mod sample;
 mod secrets;
 mod store;
@@ -64,6 +65,8 @@ struct AppState {
     /// Resolves connection secret references at use-time (#154; consumed by the
     /// per-connection multi-org audit in #156).
     secrets: Arc<dyn secrets::SecretResolver>,
+    /// Control-plane metrics, exposed at `/metrics` (#105).
+    metrics: metrics::Metrics,
 }
 
 type Shared = Arc<AppState>;
@@ -236,9 +239,16 @@ async fn convert(
         .await
         .ok()
         .flatten();
-    let outcome = run_conversion(&id, project.as_deref(), policy)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let outcome = match run_conversion(&id, project.as_deref(), policy).await {
+        Ok(outcome) => {
+            state.metrics.inc_conversion(true);
+            outcome
+        }
+        Err(e) => {
+            state.metrics.inc_conversion(false);
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+        }
+    };
     // Per-job LLM token/cost accounting (#104) — surfaced on the response for cost
     // control. Captured before the proposal/runbook are moved into the record.
     let cost = outcome.cost;
@@ -293,9 +303,15 @@ async fn transition(
     }
 
     let actor = body.actor.unwrap_or_else(|| "reviewer@portal".into());
+    // Label the target state for the metric (ProposalStatus is Copy).
+    let to_label = serde_json::to_value(body.to)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string());
     rec.proposal
         .transition(body.to, actor, now_iso8601(), &mut rec.audit)
         .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
+    state.metrics.inc_transition(&to_label);
     state.store.put(&rec).await.map_err(internal)?;
     Ok(Json(record_json(&rec)))
 }
@@ -1347,11 +1363,19 @@ fn app(state: Shared) -> Router {
         .route("/api/jobs/:id", get(job_status))
         .route("/api/jobs/:id/events", get(job_events))
         .route("/api/me", get(me))
+        // Prometheus metrics (#105) — unauthenticated; carries no tenant data.
+        .route("/metrics", get(metrics::metrics_handler))
         // Authenticate (and, when enabled, gate) every /api/* request, attaching
         // the resolved Identity to the request for handlers/RBAC (#65/#66).
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
+        ))
+        // Record method/route/status/latency for every request (#105). Outermost
+        // so it observes the full request, including auth rejections.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            metrics::track_http,
         ))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
@@ -1389,7 +1413,9 @@ fn proposal_id_from_path(path: &str) -> Option<&str> {
 /// proposal addressed by id must belong to the caller's tenant (404 otherwise) —
 /// so one tenant can neither see nor touch another's migrations (#65/#66).
 async fn auth_middleware(State(state): State<Shared>, mut req: Request, next: Next) -> Response {
-    if req.uri().path() == "/api/health" {
+    // Health and metrics are always open (no tenant data).
+    let path = req.uri().path();
+    if path == "/api/health" || path == "/metrics" {
         return next.run(req).await;
     }
     if !state.auth_enabled {
@@ -1510,12 +1536,18 @@ fn now_iso8601() -> String {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "bifrost_api=info,tower_http=info".into()),
-        )
-        .init();
+    // Structured logging (#105): JSON for log pipelines when BIFROST_LOG_JSON is
+    // set, human-readable otherwise. RUST_LOG controls levels either way.
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "bifrost_api=info,tower_http=info".into());
+    if std::env::var("BIFROST_LOG_JSON").is_ok() {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .json()
+            .init();
+    } else {
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+    }
 
     // Resolve the portfolio once at startup (a live audit may take a while).
     let (authn, auth_enabled) = auth::select_authenticator();
@@ -1527,6 +1559,7 @@ async fn main() -> anyhow::Result<()> {
         auth: authn,
         auth_enabled,
         secrets: Arc::new(secrets::DefaultSecretResolver),
+        metrics: metrics::Metrics::new(),
     });
 
     let addr = std::env::var("BIFROST_API_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
@@ -1563,6 +1596,7 @@ mod tests {
             auth: Arc::new(auth::MockAuthenticator::default()),
             auth_enabled: false,
             secrets: Arc::new(secrets::DefaultSecretResolver),
+            metrics: metrics::Metrics::new(),
         })
     }
 
@@ -1960,6 +1994,7 @@ mod tests {
             auth: Arc::new(TenantRoleAuth),
             auth_enabled: true,
             secrets: Arc::new(secrets::DefaultSecretResolver),
+            metrics: metrics::Metrics::new(),
         })
     }
 
@@ -1974,6 +2009,35 @@ mod tests {
             .await
             .unwrap();
         resp.status()
+    }
+
+    #[tokio::test]
+    async fn metrics_endpoint_is_open_and_reflects_traffic() {
+        use tower::ServiceExt;
+        // Auth is enabled, yet /metrics needs no token (it carries no tenant data).
+        let state = enforced_state();
+        // Generate a request so a series exists, then scrape /metrics.
+        assert_eq!(
+            send(&state, "GET", "/api/health", None).await,
+            StatusCode::OK
+        );
+
+        let resp = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "/metrics is unauthenticated");
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("# TYPE bifrost_http_requests_total counter"));
+        assert!(text.contains("bifrost_http_request_duration_ms_count"));
     }
 
     #[tokio::test]
