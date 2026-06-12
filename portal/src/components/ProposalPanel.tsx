@@ -5,6 +5,7 @@ import { monaco } from '../lib/monaco' // configures Monaco locally + Gruvbox th
 import type { BifrostApi } from '../api/client'
 import type { ConversionResult, Pipeline, ProposalStatus } from '../types'
 import type { Theme } from '../lib/theme'
+import { isLight } from '../lib/theme'
 import { checklistCategoryLabel, statusLabel } from '../lib/format'
 import { RiskBadge } from './RiskBadge'
 
@@ -150,7 +151,7 @@ export function ProposalPanel({
   const editMode = current?.editMode ?? false
   const busy = current?.busy ?? false
   const actionError = current?.actionError
-  const monacoTheme = theme === 'dark' ? 'bifrost-dark' : 'bifrost-light'
+  const monacoTheme = isLight(theme) ? 'bifrost-light' : 'bifrost-dark'
 
   // Run a lifecycle/edit action, folding the result back into the keyed state.
   async function runAction(fn: () => Promise<ConversionResult>) {

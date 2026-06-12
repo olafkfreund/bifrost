@@ -71,6 +71,69 @@ html[data-theme='light'] {
   color-scheme: light;
 }
 
+/* === shadcn DARK (added theme — neutral zinc surfaces + blue primary) ===
+   An additional palette alongside Gruvbox; same semantic tokens, so no
+   component changes. Swap these values for a specific shadcn preset's
+   `:root`/`.dark` variables to match an exact theme. */
+html[data-theme='shadcn-dark'] {
+  --color-ink-950: #09090b; /* background */
+  --color-ink-900: #101012; /* panels */
+  --color-ink-850: #18181b; /* raised surface */
+  --color-ink-800: #27272a; /* border */
+  --color-ink-700: #3f3f46;
+  --color-ink-600: #52525b;
+  --color-ink-500: #71717a;
+  --color-ink-300: #a1a1aa; /* muted-foreground */
+  --color-ink-200: #e4e4e7; /* body text */
+  --color-ink-100: #fafafa; /* headings */
+
+  --color-brand-400: #60a5fa;
+  --color-brand-500: #3b82f6;
+  --color-brand-600: #2563eb;
+
+  --color-risk-green: #22c55e;
+  --color-risk-green-dim: rgba(34, 197, 94, 0.16);
+  --color-risk-amber: #f59e0b;
+  --color-risk-amber-dim: rgba(245, 158, 11, 0.16);
+  --color-risk-red: #ef4444;
+  --color-risk-red-dim: rgba(239, 68, 68, 0.16);
+
+  --color-accent-aqua: #2dd4bf;
+  --color-accent-aqua-dim: rgba(45, 212, 191, 0.16);
+
+  color-scheme: dark;
+}
+
+/* === shadcn LIGHT (added theme — white surfaces + blue primary) === */
+html[data-theme='shadcn-light'] {
+  --color-ink-950: #ffffff; /* background */
+  --color-ink-900: #ffffff; /* panels */
+  --color-ink-850: #fafafa; /* raised surface */
+  --color-ink-800: #e4e4e7; /* border */
+  --color-ink-700: #d4d4d8;
+  --color-ink-600: #a1a1aa;
+  --color-ink-500: #71717a;
+  --color-ink-300: #71717a; /* muted text */
+  --color-ink-200: #27272a; /* body text */
+  --color-ink-100: #09090b; /* headings */
+
+  --color-brand-400: #2563eb;
+  --color-brand-500: #3b82f6;
+  --color-brand-600: #60a5fa;
+
+  --color-risk-green: #16a34a;
+  --color-risk-green-dim: rgba(22, 163, 74, 0.14);
+  --color-risk-amber: #d97706;
+  --color-risk-amber-dim: rgba(217, 119, 6, 0.16);
+  --color-risk-red: #dc2626;
+  --color-risk-red-dim: rgba(220, 38, 38, 0.12);
+
+  --color-accent-aqua: #0d9488;
+  --color-accent-aqua-dim: rgba(13, 148, 136, 0.14);
+
+  color-scheme: light;
+}
+
 :root {
   color-scheme: dark;
 }
