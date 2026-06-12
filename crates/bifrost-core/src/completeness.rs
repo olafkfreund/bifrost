@@ -218,10 +218,19 @@ mod tests {
     fn classifies_known_categories_from_audit_data() {
         let audit = PortfolioAudit {
             manual_tasks: vec![
-                ManualTask { kind: ManualTaskKind::Secret, name: "NUGET_API_KEY".into() },
-                ManualTask { kind: ManualTaskKind::SelfHostedRunner, name: "linux-pool".into() },
+                ManualTask {
+                    kind: ManualTaskKind::Secret,
+                    name: "NUGET_API_KEY".into(),
+                },
+                ManualTask {
+                    kind: ManualTaskKind::SelfHostedRunner,
+                    name: "linux-pool".into(),
+                },
             ],
-            unsupported_steps: vec![UnsupportedStep { task: "DownloadSecureFile@1".into(), count: 3 }],
+            unsupported_steps: vec![UnsupportedStep {
+                task: "DownloadSecureFile@1".into(),
+                count: 3,
+            }],
             actions: vec!["actions/checkout@v4".into()],
             service_connections: vec![ServiceConnection {
                 id: "1".into(),
@@ -236,7 +245,10 @@ mod tests {
 
         assert_eq!(by("YAML pipelines").status, CategoryStatus::Auto);
         assert_eq!(by("YAML pipelines").count, 10);
-        assert_eq!(by("Classic / designer pipelines").status, CategoryStatus::Review);
+        assert_eq!(
+            by("Classic / designer pipelines").status,
+            CategoryStatus::Review
+        );
         assert_eq!(by("Unsupported / partial steps").count, 3);
         assert_eq!(by("Secrets").status, CategoryStatus::Manual);
         assert_eq!(by("Secrets").count, 1);
