@@ -52,6 +52,8 @@ dry-run wrapping, gap detection, the pluggable LLM layer, and the deterministic 
 - Proposal model + state machine (`draft → in_review → approved/changes_requested → committed → validated`) — done
 - `LlmProvider` trait + structured output; grounded gap-fill request builder — done
 - Anthropic (Claude), Gemini, Copilot/Models, and Ollama/llama.cpp providers; routing policy + **air-gap mode** — done
+- Enterprise cloud LLM providers: **Azure OpenAI**, **GCP Vertex AI** (Gemini), **AWS Bedrock** (via an OpenAI-compatible gateway); private endpoints are air-gap-eligible — done
+- Runtime **air-gap toggle** (settings, not just env); air-gap = in-network providers only — done
 - axum API + SSE; Postgres + SQLite persistence; job orchestration; append-only audit log — done
 
 ## M3 — Review Portal
