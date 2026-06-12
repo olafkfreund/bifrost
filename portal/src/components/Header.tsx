@@ -57,16 +57,16 @@ export function Header({
         <div className="ml-auto flex items-center gap-3 text-xs">
           {summary?.airGap && (
             <span
-              title="No pipeline data leaves the network — local model only"
-              className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-medium"
+              title="No public egress — only in-network providers are used"
+              className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-1 font-medium"
               style={{
                 color: 'var(--color-accent-aqua)',
                 borderColor: 'color-mix(in srgb, var(--color-accent-aqua) 35%, transparent)',
                 backgroundColor: 'var(--color-accent-aqua-dim)',
               }}
             >
-              <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: 'var(--color-accent-aqua)' }} />
-              Air-gap mode
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: 'var(--color-accent-aqua)' }} />
+              Air-gap
             </span>
           )}
           {summary && (
