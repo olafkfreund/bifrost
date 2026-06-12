@@ -21,6 +21,7 @@ mod gemini;
 mod ollama;
 mod openai_compatible;
 pub mod resilience;
+mod vertex;
 
 pub use anthropic::AnthropicProvider;
 pub use azure_openai::AzureOpenAiProvider;
@@ -33,6 +34,7 @@ pub use gemini::GeminiProvider;
 pub use ollama::OllamaProvider;
 pub use openai_compatible::OpenAiCompatibleProvider;
 pub use resilience::{classify_reqwest, classify_status, retry, ErrorClass, RetryPolicy};
+pub use vertex::VertexProvider;
 
 use async_trait::async_trait;
 use bifrost_core::Gap;

@@ -82,6 +82,8 @@ impl Default for PriceTable {
         // Azure OpenAI — depends on the deployed model; default to a GPT-4o-class
         // rate, overridable per deployment with PriceTable::with_price.
         prices.insert("azure-openai".to_string(), (2.5, 10.0));
+        // Vertex AI (Gemini on Vertex) — mirrors the Gemini list price.
+        prices.insert("vertex".to_string(), (1.25, 5.0));
         // Copilot is seat-licensed — no per-token cost to attribute here.
         prices.insert("copilot".to_string(), (0.0, 0.0));
         // Local / self-hosted providers are free.
