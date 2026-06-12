@@ -1,0 +1,22 @@
+[package]
+name = "bifrost-mcp"
+description = "Bifrost MCP server — read-only grounded migration context for agents (stdio JSON-RPC)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "bifrost-mcp"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true
