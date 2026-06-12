@@ -91,6 +91,45 @@ so the whole app re-themes instantly.
 
 ![Portfolio in the shadcn light theme]({{ '/assets/screenshots/portfolio-shadcn-light.png' | relative_url }})
 
+## Pre-flight: assess, forecast, cover, ready
+
+Before any change, four surfaces give a migration manager the full picture.
+
+**Assessment** — the status of the source: pipeline mix, risk, and the inventory density
+(service connections, variable groups, secrets, runners, custom tasks) a program must account for.
+
+![Assessment — source mix, risk, and inventory density]({{ '/assets/screenshots/assessment.png' | relative_url }})
+
+**Forecast** — what GitHub will cost and need, computed deterministically from the audit:
+monthly and annual cost, runner-minutes, and a per-project breakdown.
+
+![Forecast — projected GitHub Actions cost and capacity]({{ '/assets/screenshots/forecast-cost.png' | relative_url }})
+
+**Coverage** — every Azure DevOps moving part mapped to its GitHub equivalent and a status.
+Categories not yet inventoried are flagged, never hidden, so nothing is left behind.
+
+![Coverage matrix — every ADO moving part mapped to its GitHub equivalent]({{ '/assets/screenshots/coverage-matrix.png' | relative_url }})
+
+**Readiness** — is the target GitHub org ready to receive it: runners, Actions policy, OIDC
+federation, secrets, rulesets, ownership, and a rollback plan, each with a status.
+
+![Readiness — the target GitHub pre-flight checklist]({{ '/assets/screenshots/readiness.png' | relative_url }})
+
+## The migration assistant
+
+A grounded, query-only assistant answers questions about the migration — cost, risk, coverage —
+routed through whatever LLM is configured, so air-gap mode forces it local. It explains and
+advises; it cannot change anything.
+
+![The migration assistant, grounded in the portfolio]({{ '/assets/screenshots/chat-assistant.png' | relative_url }})
+
+## Routing and air-gap
+
+Decide which model handles which work — bulk and cheap to local or small models, hard reasoning
+to a frontier model. In air-gap mode everything is forced local; no pipeline data leaves the box.
+
+![LLM routing policy and the air-gap toggle]({{ '/assets/screenshots/routing-airgap.png' | relative_url }})
+
 ## Guided setup
 
 A first-run checklist verifies the control plane, identity, secret backend, connections, and the
@@ -107,5 +146,6 @@ connecting to live data — so it travels with the tool, air-gapped or not.
 
 ---
 
-<small>Screenshots show Bifrost running against synthetic enterprise sample data
-(`contoso`). No real pipeline definitions or secrets are shown.</small>
+<small>Screenshots show Bifrost across its Gruvbox themes, against the synthetic
+<code>contoso</code> sample and a small live Azure DevOps audit. No pipeline definitions or
+secrets are shown — Bifrost records secret names and types only, never values.</small>
