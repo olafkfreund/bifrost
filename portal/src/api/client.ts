@@ -1,5 +1,6 @@
 import type {
   AuditEvent,
+  CompletenessRow,
   ConnectionView,
   ConversionResult,
   Forecast,
@@ -51,6 +52,8 @@ export interface BifrostApi {
   getReportPdf(project?: string): Promise<Blob>
   /** Deterministic GitHub Actions cost + capacity forecast (#237). */
   getForecast(): Promise<Forecast>
+  /** Migration completeness matrix — every ADO moving part + its status (#238). */
+  getCompleteness(): Promise<CompletenessRow[]>
 }
 
 /** One LLM provider in the routing catalog (#197). */
@@ -368,6 +371,38 @@ class MockBifrostApi implements BifrostApi {
     }
     return f
   }
+  async getCompleteness(): Promise<CompletenessRow[]> {
+    // Representative matrix mirroring `bifrost_core::completeness` over the demo
+    // portfolio. Not-yet-inventoried categories are shown honestly, never omitted.
+    const r = (
+      category: string,
+      count: number,
+      inventoried: boolean,
+      status: CompletenessRow['status'],
+      githubEquivalent: string,
+      note: string,
+    ): CompletenessRow => ({ category, count, inventoried, status, githubEquivalent, note })
+    return [
+      r('YAML pipelines', 11, true, 'auto', 'GitHub Actions workflows', 'Converted automatically; inspect before production use.'),
+      r('Triggers (CI / PR / schedule / path)', 0, false, 'auto', 'on: push / pull_request / schedule', 'Converted automatically by the Importer.'),
+      r('Actions allow-list', 4, true, 'manual', 'Org/repo Actions policy', 'Add these actions to the GitHub Actions allow-list.'),
+      r('Classic / designer pipelines', 5, true, 'review', 'Workflows (reverse-engineered)', 'The hard tail — UI-defined logic; needs the most review.'),
+      r('Unsupported / partial steps', 7, true, 'review', 'Gap-filled workflow steps', 'The model fills each gap from the diff; a human approves.'),
+      r('Secrets', 3, true, 'manual', 'Actions secrets', 'Names only — values are never read; re-enter them in GitHub.'),
+      r('Service connections', 2, true, 'manual', 'OIDC federation / secrets', 'Azure connections become Entra workload-identity federation.'),
+      r('Variable groups', 2, true, 'manual', 'Repo/org/environment variables', 'ADO stage-scoped variables have no direct GitHub equivalent.'),
+      r('Self-hosted runners', 1, true, 'manual', 'Self-hosted runners / runner groups', 'Provision runners and match the expected labels.'),
+      r('Secure files', 0, false, 'notInventoried', 'Actions secrets / external vault', 'Not yet enumerated; check the ADO library.'),
+      r('Task groups', 0, false, 'notInventoried', 'Composite actions / reusable workflows', 'Not yet enumerated.'),
+      r('Agent pools', 0, false, 'notInventoried', 'Runner labels / runner groups', 'Not yet enumerated.'),
+      r('Deployment groups', 0, false, 'notInventoried', 'Self-hosted runner labels', 'Not yet enumerated.'),
+      r('Environments + approvals / gates', 0, false, 'notInventoried', 'GitHub Environments + protection rules', 'Commonly missed; not yet enumerated.'),
+      r('Azure Artifacts feeds', 0, false, 'notInventoried', 'GitHub Packages', 'Not yet enumerated.'),
+      r('Retention policies', 0, false, 'notInventoried', 'Artifact retention / Releases', 'Not yet enumerated.'),
+      r('Pipeline permissions', 0, false, 'notInventoried', 'Workflow permissions / GITHUB_TOKEN', 'Not yet enumerated.'),
+      r('Repositories (history, branches, PRs)', 0, false, 'notInventoried', 'GitHub Enterprise Importer (GEI)', 'Out of pipeline scope; migrated via GEI.'),
+    ]
+  }
 }
 
 /** Deterministic cost forecast — the same arithmetic as `bifrost_core::forecast`,
@@ -608,6 +643,11 @@ class HttpBifrostApi implements BifrostApi {
     const res = await fetch(`${this.base}/forecast`, { headers: this.headers() })
     if (!res.ok) throw new Error(`forecast request failed: ${res.status}`)
     return (await res.json()) as Forecast
+  }
+  async getCompleteness(): Promise<CompletenessRow[]> {
+    const res = await fetch(`${this.base}/completeness`, { headers: this.headers() })
+    if (!res.ok) throw new Error(`completeness request failed: ${res.status}`)
+    return (await res.json()) as CompletenessRow[]
   }
 }
 

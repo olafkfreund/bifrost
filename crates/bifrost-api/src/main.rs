@@ -1124,6 +1124,17 @@ async fn forecast_handler(State(state): State<Shared>) -> Json<bifrost_core::For
     ))
 }
 
+/// `GET /api/completeness` (#238) — the migration completeness matrix: every ADO
+/// moving-part category mapped to its GitHub equivalent and a status. Categories
+/// Bifrost cannot yet enumerate are flagged `notInventoried` (never omitted), so
+/// nothing is silently dropped. Deterministic — no LLM.
+async fn completeness_handler(
+    State(state): State<Shared>,
+) -> Json<Vec<bifrost_core::CompletenessRow>> {
+    let portfolio = state.portfolio.read().await.clone();
+    Json(bifrost_core::completeness(&portfolio))
+}
+
 async fn report_json(
     State(state): State<Shared>,
     axum::extract::Query(q): axum::extract::Query<ReportQuery>,
@@ -1862,6 +1873,7 @@ fn app(state: Shared) -> Router {
         .route("/api/settings/air-gap", put(set_air_gap_setting))
         .route("/api/providers", get(providers))
         .route("/api/forecast", get(forecast_handler))
+        .route("/api/completeness", get(completeness_handler))
         .route("/api/report", get(report))
         .route("/api/report.json", get(report_json))
         .route("/api/report.pdf", get(report_pdf_handler))

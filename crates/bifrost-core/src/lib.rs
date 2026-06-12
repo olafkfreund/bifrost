@@ -12,6 +12,7 @@ pub mod attest;
 pub mod audit;
 pub mod audit_log;
 pub mod connection;
+pub mod completeness;
 pub mod conversion;
 pub mod forecast;
 pub mod gap;
@@ -33,6 +34,7 @@ pub use audit::{AuditCounts, AuditSummary, ManualTask, ManualTaskKind, Unsupport
 pub use audit_log::{AuditEvent, AuditLog};
 pub use connection::{ConfigAction, ConfigEvent, Connection, ConnectionKind, SecretRef};
 pub use conversion::{build_pipeline, pipeline_from_dry_run, signals_from_dry_run, PipelineMeta};
+pub use completeness::{completeness, CategoryStatus, CompletenessRow};
 pub use forecast::{forecast, CapacityForecast, Forecast, ProjectForecast, RunnerRate};
 pub use gap::{DryRunResult, Gap, GapKind};
 pub use identity::{Identity, Role};
