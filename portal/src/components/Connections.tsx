@@ -191,8 +191,9 @@ export function Connections({ api }: { api: BifrostApi }) {
     }
   }
 
-  const input =
-    'w-full rounded-md border border-ink-800 bg-ink-900 px-3 py-2 text-sm text-ink-100 placeholder:text-ink-500'
+  // `.bf-field` (index.css) supplies the themed chrome — including a drawn
+  // chevron for <select>, replacing the inconsistent native OS dropdown.
+  const input = 'bf-field w-full px-3 py-2 text-sm'
   const label = 'mb-1 block text-xs font-medium text-ink-300'
 
   return (

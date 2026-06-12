@@ -13,9 +13,11 @@ function Card({
   accent?: string
 }) {
   return (
-    <div className="rounded-xl border border-ink-800 bg-ink-900/50 p-4">
-      <div className="text-xs font-medium uppercase tracking-wide text-ink-300">{label}</div>
-      <div className={`mt-1 text-2xl font-semibold ${accent ?? 'text-ink-100'}`}>{value}</div>
+    <div className="bf-card rounded-xl p-4">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-300">{label}</div>
+      <div className={`tnum mt-1.5 font-display text-2xl font-semibold tracking-tight ${accent ?? 'text-ink-100'}`}>
+        {value}
+      </div>
       {sub && <div className="mt-1 text-xs text-ink-300">{sub}</div>}
     </div>
   )
@@ -44,9 +46,9 @@ export function StatCards({ summary }: { summary: PortfolioSummary }) {
         value={t.pipelines}
         sub={`${t.orgs && t.orgs > 1 ? `${t.orgs} orgs · ` : ''}${t.projects} projects · ${t.yaml} YAML · ${t.classic} classic`}
       />
-      <div className="rounded-xl border border-ink-800 bg-ink-900/50 p-4">
-        <div className="text-xs font-medium uppercase tracking-wide text-ink-300">Risk profile</div>
-        <div className="mt-1 flex items-baseline gap-3 text-sm">
+      <div className="bf-card rounded-xl p-4">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-300">Risk profile</div>
+        <div className="tnum mt-1.5 flex items-baseline gap-3 text-sm font-medium">
           <span className="text-[var(--color-risk-green)]">{t.green} green</span>
           <span className="text-[var(--color-risk-amber)]">{t.amber} amber</span>
           <span className="text-[var(--color-risk-red)]">{t.red} red</span>

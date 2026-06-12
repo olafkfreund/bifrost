@@ -142,8 +142,9 @@ export function OnboardingWizard({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="max-h-full w-full max-w-2xl overflow-y-auto rounded-2xl border border-ink-800 bg-ink-900 p-6 shadow-xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="bf-scrim" onClick={onClose} />
+      <div className="bf-dialog relative z-10 max-h-full w-full max-w-2xl overflow-y-auto rounded-2xl p-6">
         <div className="mb-4 flex items-start justify-between">
           <div>
             <h2 className="text-lg font-semibold text-ink-100">Welcome to Bifrost</h2>

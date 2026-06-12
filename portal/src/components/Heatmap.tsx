@@ -19,8 +19,8 @@ function Tile({ p, onSelect }: { p: Pipeline; onSelect: (p: Pipeline) => void })
   return (
     <button
       onClick={() => onSelect(p)}
-      title={`${p.name} — ${m.label} (${p.riskScore})`}
-      className={`group relative flex h-20 flex-col justify-between rounded-lg border border-ink-800 p-2.5 text-left transition
+      title={`${p.name} — ${m.label}: risk ${p.riskScore} · ${Math.round(p.convertedRatio * 100)}% converted by the Importer`}
+      className={`group relative flex h-20 flex-col justify-between rounded-lg border border-ink-800 p-2.5 text-left shadow-[var(--elevation-card)] transition
         hover:-translate-y-0.5 hover:border-ink-600 hover:ring-2 ${m.ring} ${m.bg}`}
     >
       <div className="flex items-center justify-between">
@@ -30,7 +30,11 @@ function Tile({ p, onSelect }: { p: Pipeline; onSelect: (p: Pipeline) => void })
         )}
       </div>
       <div className="truncate text-xs font-medium text-ink-100">{p.name.split(' · ')[1] ?? p.name}</div>
-      <div className="font-mono text-[10px] text-ink-300">{p.riskScore} · {Math.round(p.convertedRatio * 100)}%</div>
+      <div className="tnum font-mono text-[10px] text-ink-300">
+        <span title="Deterministic risk score (0–100)">risk {p.riskScore}</span>
+        <span className="text-ink-500"> · </span>
+        <span title="Share converted automatically by the Importer">{Math.round(p.convertedRatio * 100)}%</span>
+      </div>
     </button>
   )
 }
