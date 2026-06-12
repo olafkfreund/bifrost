@@ -19,6 +19,7 @@ pub mod ingestion;
 pub mod model;
 pub mod parity;
 pub mod proposal;
+pub mod report;
 pub mod risk;
 pub mod runbook;
 
@@ -45,5 +46,6 @@ pub use parity::{
     compare as compare_parity, ParityReport, ParityVerdict, RunFacts, SetDiff, SMOKE_PARITY_CAVEAT,
 };
 pub use proposal::{is_legal_transition, Attestation, Proposal, ProposalError};
+pub use report::{report_markdown, report_stats, ReportStats};
 pub use risk::{assess, band_for_score, RiskAssessment, RiskSignals};
 pub use runbook::{gap_is_manual, ChecklistCategory, ChecklistItem, Runbook};

@@ -44,6 +44,8 @@ export interface BifrostApi {
   setAirGap(enabled: boolean): Promise<Settings>
   /** LLM providers routable for this tenant + how to enable the rest (#197). */
   getProviders(): Promise<ProvidersView>
+  /** The pre-migration status report as Markdown (#204) — read-only assessment. */
+  getReport(): Promise<string>
 }
 
 /** One LLM provider in the routing catalog (#197). */
@@ -340,6 +342,9 @@ class MockBifrostApi implements BifrostApi {
     ]
     return { live: false, available: ['anthropic', 'ollama'], catalog }
   }
+  async getReport(): Promise<string> {
+    return '# Migration Status Report\n\n> This is a pre-migration assessment. No changes have been made.\n'
+  }
 }
 
 /** Redact a create-input into a list-view kind (drops any inline plaintext). */
@@ -531,6 +536,11 @@ class HttpBifrostApi implements BifrostApi {
     const res = await fetch(`${this.base}/providers`, { headers: this.headers() })
     if (!res.ok) throw new Error(`providers request failed: ${res.status}`)
     return (await res.json()) as ProvidersView
+  }
+  async getReport(): Promise<string> {
+    const res = await fetch(`${this.base}/report`, { headers: this.headers() })
+    if (!res.ok) throw new Error(`report request failed: ${res.status}`)
+    return await res.text()
   }
 }
 
