@@ -432,6 +432,7 @@ mod tests {
                         },
                     ],
                 }],
+                forecast_capacity: None,
             },
         }
     }

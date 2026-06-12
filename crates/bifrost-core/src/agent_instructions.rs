@@ -163,6 +163,7 @@ mod tests {
                 project: "P".into(),
             }],
             variable_groups: vec![],
+            forecast_capacity: None,
         };
         let md = agent_instructions(&portfolio(audit));
         assert!(md.contains("NUGET_API_KEY"));

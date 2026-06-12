@@ -184,6 +184,7 @@ mod tests {
                 project: "A".into(),
             }],
             variable_groups: vec![],
+            forecast_capacity: None,
         };
         let portfolio = Portfolio {
             summary: PortfolioSummary {

@@ -163,13 +163,16 @@ pub async fn audit_portfolio(
             totals,
         },
         pipelines,
-        // Carry the detail a change-management report needs (#220).
+        // Carry the detail a change-management report needs (#220), plus the
+        // forecast capacity (concurrency/queue/percentiles) from the Importer
+        // forecast (#248).
         audit: bifrost_core::PortfolioAudit {
             manual_tasks: audit.manual_tasks,
             unsupported_steps: audit.unsupported_steps,
             actions: audit.actions,
             service_connections: connections,
             variable_groups: groups,
+            forecast_capacity: forecast.capacity,
         },
     })
 }
@@ -204,6 +207,10 @@ pub fn merge_portfolios(
             .service_connections
             .extend(p.audit.service_connections);
         audit.variable_groups.extend(p.audit.variable_groups);
+        // Capacity is org-level; keep the first available (#248).
+        if audit.forecast_capacity.is_none() {
+            audit.forecast_capacity = p.audit.forecast_capacity;
+        }
     }
     audit.actions.sort();
     audit.actions.dedup();

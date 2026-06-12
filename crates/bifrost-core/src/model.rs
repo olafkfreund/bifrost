@@ -109,7 +109,8 @@ pub struct PortfolioSummary {
 /// The audit detail a change-management report needs (#220): the names of the
 /// secrets/variables/connections to set up in GitHub, the constructs that need
 /// manual rework, and the Actions allow-list — beyond the headline counts.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+// No `Eq` — `forecast_capacity` carries `f64`s.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PortfolioAudit {
     /// Manual tasks (secret names, self-hosted runners) the Importer flagged.
@@ -123,6 +124,10 @@ pub struct PortfolioAudit {
     pub service_connections: Vec<crate::ingestion::ServiceConnection>,
     /// Variable groups (names + secret flag, per project) to add to GitHub.
     pub variable_groups: Vec<crate::ingestion::VariableGroup>,
+    /// Capacity figures from the Importer `forecast` (peak concurrency, queue,
+    /// job-duration percentiles), when a live forecast was run (#248).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forecast_capacity: Option<crate::forecast::CapacityForecast>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

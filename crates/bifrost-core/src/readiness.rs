@@ -195,6 +195,7 @@ mod tests {
                 project: "P".into(),
             }],
             variable_groups: vec![],
+            forecast_capacity: None,
         };
         let rows = readiness(&portfolio(false, audit));
         let by = |c: &str| rows.iter().find(|r| r.category == c).unwrap().clone();
