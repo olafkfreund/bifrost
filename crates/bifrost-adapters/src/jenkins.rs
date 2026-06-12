@@ -21,8 +21,10 @@ use bifrost_core::{
 };
 use serde_json::Value;
 
+use bifrost_llm::{retry, RetryPolicy};
+
 use crate::ado_auth::{AdoAuth, PatAuth};
-use crate::source::{AdapterError, SourceAdapter};
+use crate::source::{classify_adapter_error, AdapterError, SourceAdapter, HTTP_TIMEOUT};
 
 // ---- pure parsers (fixture-tested) -----------------------------------------
 
@@ -150,9 +152,22 @@ impl JenkinsAdapter {
         Ok(Self::new(base, &user, &token))
     }
 
+    /// GET with bounded retries + backoff on transient failures (#106).
     async fn get(&self, path: &str) -> Result<Value, AdapterError> {
+        retry(
+            RetryPolicy::from_env("BIFROST_JENKINS"),
+            classify_adapter_error,
+            || self.attempt(path),
+        )
+        .await
+    }
+
+    async fn attempt(&self, path: &str) -> Result<Value, AdapterError> {
         let url = format!("{}/{path}", self.base_url);
-        let req = self.auth.apply(self.client.get(&url)).await?;
+        let req = self
+            .auth
+            .apply(self.client.get(&url).timeout(HTTP_TIMEOUT))
+            .await?;
         let resp = req
             .send()
             .await

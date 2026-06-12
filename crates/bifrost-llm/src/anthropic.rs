@@ -95,24 +95,14 @@ impl LlmProvider for AnthropicProvider {
             }],
         };
 
-        let resp = self
-            .client
-            .post(&self.base_url)
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| LlmError::Transport(e.to_string()))?;
-
-        let status = resp.status();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| LlmError::Transport(e.to_string()))?;
-        if !status.is_success() {
-            return Err(LlmError::Transport(format!("anthropic {status}: {text}")));
-        }
+        let text = crate::http_text_with_retry("anthropic", || {
+            self.client
+                .post(&self.base_url)
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION)
+                .json(&body)
+        })
+        .await?;
 
         let parsed: MessagesResponse = serde_json::from_str(&text)
             .map_err(|e| LlmError::Parse(format!("response envelope: {e}: {text}")))?;
