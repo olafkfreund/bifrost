@@ -1091,6 +1091,22 @@ struct ReportQuery {
     project: Option<String>,
 }
 
+/// `GET /api/copilot-instructions` (#243) — the `.github/copilot-instructions.md`
+/// for a migrated repo, grounded in the audit. Drop it into the target repo so an
+/// agent has the migration context. Deterministic.
+async fn copilot_instructions_handler(State(state): State<Shared>) -> Response {
+    let portfolio = state.portfolio.read().await.clone();
+    let md = bifrost_core::agent_instructions(&portfolio);
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/markdown; charset=utf-8",
+        )],
+        md,
+    )
+        .into_response()
+}
+
 /// `GET /api/report[?project=…]` (#204, #220) — the pre-migration status report as
 /// Markdown, optionally scoped to a single project (its owner / change board).
 /// Read-only; generated from the current portfolio audit (no changes are made).
@@ -2025,6 +2041,10 @@ fn app(state: Shared) -> Router {
         .route("/api/program", get(program_handler))
         .route("/api/completeness", get(completeness_handler))
         .route("/api/chat", post(chat_handler))
+        .route(
+            "/api/copilot-instructions",
+            get(copilot_instructions_handler),
+        )
         .route("/api/report", get(report))
         .route("/api/report.json", get(report_json))
         .route("/api/report.pdf", get(report_pdf_handler))

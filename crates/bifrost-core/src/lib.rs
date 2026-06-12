@@ -7,6 +7,7 @@
 //! Risk scoring lives here and is computed from explainable factors — never
 //! from the LLM (see the implementation plan, §6).
 
+pub mod agent_instructions;
 pub mod assemble;
 pub mod attest;
 pub mod audit;
@@ -28,6 +29,7 @@ pub mod risk;
 pub mod runbook;
 pub mod source_stats;
 
+pub use agent_instructions::agent_instructions;
 pub use assemble::{assemble_workflow, GapFill};
 pub use attest::{
     AuditPack, AuditPackSummary, MigrationAttestation, MigrationPredicate, Signature,
