@@ -6,6 +6,7 @@ type Page =
   | 'review'
   | 'connections'
   | 'routing'
+  | 'readiness'
   | 'docs'
 
 /** Left-rail navigation. Primary work (Workspace) and configuration (Settings)
@@ -58,6 +59,12 @@ const ICONS: Record<Page, React.ReactNode> = {
       <path d="M8 19h6a4 4 0 0 0 4-4V7M6 17V9a4 4 0 0 1 4-4h6" />
     </svg>
   ),
+  readiness: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+      <path d="M9 12l2 2 4-4" />
+    </svg>
+  ),
   docs: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
@@ -77,6 +84,7 @@ const GROUPS: { label: string; items: { id: Page; label: string }[] }[] = [
   { label: 'Settings', items: [
     { id: 'connections', label: 'Connections' },
     { id: 'routing', label: 'Routing' },
+    { id: 'readiness', label: 'Readiness' },
   ] },
 ]
 

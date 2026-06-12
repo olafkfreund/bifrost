@@ -12,6 +12,7 @@ import { DocsPage } from './components/DocsPage'
 import { Forecast } from './components/Forecast'
 import { Completeness } from './components/Completeness'
 import { Assessment } from './components/Assessment'
+import { Readiness } from './components/Readiness'
 import { ChatPopout } from './components/ChatPopout'
 import { ReviewQueue } from './components/ReviewQueue'
 import { Connections } from './components/Connections'
@@ -32,6 +33,7 @@ type Page =
   | 'review'
   | 'connections'
   | 'routing'
+  | 'readiness'
   | 'docs'
 
 /** Slugify a project name for use in a download filename. */
@@ -107,6 +109,8 @@ export default function App() {
         <Connections api={api} />
       ) : page === 'routing' ? (
         <Routing api={api} />
+      ) : page === 'readiness' ? (
+        <Readiness api={api} />
       ) : page === 'forecast' ? (
         <Forecast api={api} />
       ) : page === 'assessment' ? (
