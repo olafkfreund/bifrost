@@ -114,6 +114,35 @@ impl LlmProvider for AnthropicProvider {
         }
         parse_gap_fill(&answer)
     }
+
+    async fn chat(&self, prompt: &str) -> Result<String, LlmError> {
+        let body = MessagesRequest {
+            model: &self.model,
+            max_tokens: self.max_tokens,
+            thinking: Thinking { kind: "adaptive" },
+            messages: vec![Message {
+                role: "user",
+                content: prompt.to_string(),
+            }],
+        };
+        let text = crate::http_text_with_retry("anthropic", || {
+            self.client
+                .post(&self.base_url)
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION)
+                .json(&body)
+        })
+        .await?;
+        let parsed: MessagesResponse = serde_json::from_str(&text)
+            .map_err(|e| LlmError::Parse(format!("response envelope: {e}: {text}")))?;
+        let answer = parsed.text();
+        if answer.is_empty() {
+            return Err(LlmError::Parse(format!(
+                "no text block in response: {text}"
+            )));
+        }
+        Ok(answer)
+    }
 }
 
 // --- Anthropic Messages API wire types (only the fields we use) ---

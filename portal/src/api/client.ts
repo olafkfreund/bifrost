@@ -54,6 +54,8 @@ export interface BifrostApi {
   getForecast(): Promise<Forecast>
   /** Migration completeness matrix — every ADO moving part + its status (#238). */
   getCompleteness(): Promise<CompletenessRow[]>
+  /** Ask the grounded migration assistant a question (#252). Query-only. */
+  chat(message: string): Promise<{ reply: string; provider: string }>
 }
 
 /** One LLM provider in the routing catalog (#197). */
@@ -403,6 +405,26 @@ class MockBifrostApi implements BifrostApi {
       r('Repositories (history, branches, PRs)', 0, false, 'notInventoried', 'GitHub Enterprise Importer (GEI)', 'Out of pipeline scope; migrated via GEI.'),
     ]
   }
+  async chat(message: string): Promise<{ reply: string; provider: string }> {
+    // Offline assistant: a grounded, keyword-aware reply from the demo portfolio
+    // (no LLM). The live API routes through the configured provider instead.
+    const t = mockPortfolio.summary.totals
+    const f = computeForecast(mockPortfolio.pipelines)
+    const m = message.toLowerCase()
+    let reply: string
+    if (/cost|forecast|minute|spend|budget|price/.test(m)) {
+      reply = `Projected GitHub Actions cost is about $${Math.round(f.monthlyCostUsd)}/month (${f.totalMinutes.toLocaleString()} runner-minutes on ${f.runnerClass}). The biggest project is ${f.byProject[0]?.project} at $${f.byProject[0]?.costUsd}/mo.`
+    } else if (/risk|red|amber|green|danger/.test(m)) {
+      reply = `Across ${t.pipelines} pipelines: ${t.green} green, ${t.amber} amber, ${t.red} red. The red ones are mostly classic (designer) pipelines — the hard tail that needs the most review.`
+    } else if (/coverage|moving part|secret|connection|missing|left behind|inventor/.test(m)) {
+      reply = `Coverage: YAML pipelines convert automatically; classic pipelines and unsupported steps need review; secrets, service connections, variable groups and self-hosted runners are manual GitHub setup (names only — values are never read). Several categories (secure files, task groups, agent pools, environments/gates) are not yet inventoried — check those in Azure DevOps.`
+    } else if (/classic|designer/.test(m)) {
+      reply = `There are ${t.classic} classic/designer pipelines. They store logic in the ADO UI rather than YAML, so they default Amber/Red and need the most human review during conversion.`
+    } else {
+      reply = `This estate has ${t.pipelines} pipelines across ${t.projects} projects (${t.yaml} YAML, ${t.classic} classic), forecast at about $${Math.round(f.monthlyCostUsd)}/month on GitHub Actions. Ask me about cost, risk, coverage, or a specific project. (Offline demo — connect an LLM provider for full answers.)`
+    }
+    return { reply, provider: 'offline-demo' }
+  }
 }
 
 /** Deterministic cost forecast — the same arithmetic as `bifrost_core::forecast`,
@@ -648,6 +670,15 @@ class HttpBifrostApi implements BifrostApi {
     const res = await fetch(`${this.base}/completeness`, { headers: this.headers() })
     if (!res.ok) throw new Error(`completeness request failed: ${res.status}`)
     return (await res.json()) as CompletenessRow[]
+  }
+  async chat(message: string): Promise<{ reply: string; provider: string }> {
+    const res = await fetch(`${this.base}/chat`, {
+      method: 'POST',
+      headers: { ...this.headers(), 'content-type': 'application/json' },
+      body: JSON.stringify({ message }),
+    })
+    if (!res.ok) throw new Error(`chat request failed: ${res.status}`)
+    return (await res.json()) as { reply: string; provider: string }
   }
 }
 

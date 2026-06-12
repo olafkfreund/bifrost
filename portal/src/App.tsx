@@ -11,6 +11,7 @@ import { ProposalPanel } from './components/ProposalPanel'
 import { DocsPage } from './components/DocsPage'
 import { Forecast } from './components/Forecast'
 import { Completeness } from './components/Completeness'
+import { ChatPopout } from './components/ChatPopout'
 import { ReviewQueue } from './components/ReviewQueue'
 import { Connections } from './components/Connections'
 import { Routing } from './components/Routing'
@@ -269,6 +270,7 @@ export default function App() {
         }}
       />
       <ProposalPanel pipeline={proposalFor} api={api} theme={theme} onClose={() => setProposalFor(null)} />
+      <ChatPopout api={api} />
     </div>
   )
 }

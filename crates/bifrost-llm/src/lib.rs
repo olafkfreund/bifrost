@@ -109,6 +109,16 @@ pub trait LlmProvider: Send + Sync {
     fn is_local(&self) -> bool;
     /// Fill a single gap, grounded in the request's diff.
     async fn fill_gap(&self, req: &GapFillRequest) -> Result<GapFillResponse, LlmError>;
+
+    /// Answer a freeform, grounded question about the migration (#252). The
+    /// caller composes `prompt` (grounded context + the user's question); the
+    /// provider returns prose. Default: unsupported, so a provider opts in by
+    /// overriding. Air-gap is enforced by the router, not here.
+    async fn chat(&self, _prompt: &str) -> Result<String, LlmError> {
+        Err(LlmError::Transport(
+            "chat is not supported by this provider yet".into(),
+        ))
+    }
 }
 
 /// Per-request timeout for an LLM HTTP call (#106). Generous — frontier models
@@ -391,6 +401,14 @@ impl LlmProvider for MockLlmProvider {
             verify_steps: vec!["run the converted workflow in a sandbox".into()],
             confidence: 0.5,
         })
+    }
+    async fn chat(&self, _prompt: &str) -> Result<String, LlmError> {
+        Ok(
+            "This is the offline assistant — no live LLM is configured. Connect an LLM \
+            provider on the Connections page (or run Ollama for an air-gapped setup) to get \
+            grounded answers about your migration."
+                .into(),
+        )
     }
 }
 
