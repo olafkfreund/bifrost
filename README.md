@@ -115,10 +115,11 @@ to Postgres with `--profile postgres` for the multi-tenant server. Full options 
 To drive it from your editor instead, point VS Code (or Cursor / Claude Desktop) at the MCP
 server — see the [editor guide](https://bitfrost.freundcloud.com/mcp).
 
-> Pre-built, signed images on GHCR (`docker pull`, no build) plus SBOMs are on the roadmap
-> ([#279](https://github.com/olafkfreund/bifrost/issues/279),
-> [#280](https://github.com/olafkfreund/bifrost/issues/280)). Today the image builds from
-> source via the command above.
+> A [release workflow](.github/workflows/release.yml) publishes **cosign-signed** images with
+> **SPDX SBOM attestations** to GHCR (`ghcr.io/olafkfreund/bifrost-{api,portal}`) on each
+> tagged release — pull and `cosign verify` instead of building. See
+> [`deploy/`](deploy/#images) for the pull + verify recipe. Until the first tag is cut, build
+> from source with the command above.
 
 ## Getting started (contributors)
 
