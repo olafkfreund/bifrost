@@ -2,6 +2,7 @@ import type {
   AuditEvent,
   ConnectionView,
   ConversionResult,
+  Forecast,
   JobProgress,
   Pipeline,
   Portfolio,
@@ -48,6 +49,8 @@ export interface BifrostApi {
   getReport(project?: string): Promise<string>
   /** The status report as a PDF blob (#221), optionally scoped to a project. */
   getReportPdf(project?: string): Promise<Blob>
+  /** Deterministic GitHub Actions cost + capacity forecast (#237). */
+  getForecast(): Promise<Forecast>
 }
 
 /** One LLM provider in the routing catalog (#197). */
@@ -352,6 +355,51 @@ class MockBifrostApi implements BifrostApi {
     const scope = project ? ` ${project}` : ''
     return new Blob([`%PDF-1.5 (mock${scope})`], { type: 'application/pdf' })
   }
+  async getForecast(): Promise<Forecast> {
+    // Mirrors the deterministic core model over the demo portfolio, plus an
+    // illustrative capacity block (real capacity comes from the Importer forecast).
+    const f = computeForecast(mockPortfolio.pipelines)
+    f.capacity = {
+      peakConcurrency: 6,
+      medianQueueMinutes: 0.8,
+      p50JobMinutes: 4.5,
+      p90JobMinutes: 12.0,
+      maxJobMinutes: 38.0,
+    }
+    return f
+  }
+}
+
+/** Deterministic cost forecast — the same arithmetic as `bifrost_core::forecast`,
+ *  so the mock and the live API agree. Linux 2-core at $0.008/min by default. */
+const RUNNER_CLASS = 'ubuntu-latest (2-core)'
+const USD_PER_MINUTE = 0.008
+const cents = (x: number) => Math.round(x * 100) / 100
+function computeForecast(pipelines: Pipeline[]): Forecast {
+  const totalMinutes = pipelines.reduce((s, p) => s + p.forecastMinutes, 0)
+  const byProjectMap = new Map<string, { pipelines: number; minutes: number }>()
+  for (const p of pipelines) {
+    const cur = byProjectMap.get(p.project) ?? { pipelines: 0, minutes: 0 }
+    cur.pipelines += 1
+    cur.minutes += p.forecastMinutes
+    byProjectMap.set(p.project, cur)
+  }
+  const byProject = [...byProjectMap.entries()]
+    .map(([project, v]) => ({ project, pipelines: v.pipelines, minutes: v.minutes, costUsd: cents(v.minutes * USD_PER_MINUTE) }))
+    .sort((a, b) => b.minutes - a.minutes || a.project.localeCompare(b.project))
+  const monthly = cents(totalMinutes * USD_PER_MINUTE)
+  return {
+    runnerClass: RUNNER_CLASS,
+    usdPerMinute: USD_PER_MINUTE,
+    totalMinutes,
+    monthlyCostUsd: monthly,
+    annualCostUsd: cents(monthly * 12),
+    byProject,
+    notes: [
+      `Assumes all minutes on ${RUNNER_CLASS} at $${USD_PER_MINUTE.toFixed(3)}/min — verify against your GitHub plan.`,
+      'Excludes any included free minutes and storage; self-hosted runners incur infrastructure cost not shown here.',
+    ],
+  }
 }
 
 /** Redact a create-input into a list-view kind (drops any inline plaintext). */
@@ -555,6 +603,11 @@ class HttpBifrostApi implements BifrostApi {
     const res = await fetch(`${this.base}/report.pdf${q}`, { headers: this.headers() })
     if (!res.ok) throw new Error(`report PDF request failed: ${res.status}`)
     return await res.blob()
+  }
+  async getForecast(): Promise<Forecast> {
+    const res = await fetch(`${this.base}/forecast`, { headers: this.headers() })
+    if (!res.ok) throw new Error(`forecast request failed: ${res.status}`)
+    return (await res.json()) as Forecast
   }
 }
 

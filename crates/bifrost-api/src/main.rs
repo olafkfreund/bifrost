@@ -1112,6 +1112,18 @@ async fn report(
 
 /// `GET /api/report.json[?project=…]` (#204, #220) — the report's headline stats +
 /// summary + the Markdown body, for the portal and automation.
+/// `GET /api/forecast` (#237) — the deterministic cost + capacity projection for
+/// the target GitHub org. Cost is computed from the audit's per-pipeline
+/// runner-minutes (never the LLM); capacity history from the Importer `forecast`
+/// report is wired in a follow-up, so `capacity` is `None` on the live path.
+async fn forecast_handler(State(state): State<Shared>) -> Json<bifrost_core::Forecast> {
+    let portfolio = state.portfolio.read().await.clone();
+    Json(bifrost_core::forecast(
+        &portfolio.pipelines,
+        &bifrost_core::RunnerRate::default(),
+    ))
+}
+
 async fn report_json(
     State(state): State<Shared>,
     axum::extract::Query(q): axum::extract::Query<ReportQuery>,
@@ -1849,6 +1861,7 @@ fn app(state: Shared) -> Router {
         .route("/api/settings", get(get_settings))
         .route("/api/settings/air-gap", put(set_air_gap_setting))
         .route("/api/providers", get(providers))
+        .route("/api/forecast", get(forecast_handler))
         .route("/api/report", get(report))
         .route("/api/report.json", get(report_json))
         .route("/api/report.pdf", get(report_pdf_handler))
