@@ -76,6 +76,21 @@ pub enum ConnectionKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         residency: Option<String>,
     },
+    /// A CI/CD **source** to migrate (#207): Jenkins, GitLab, Bitbucket, CircleCI,
+    /// Travis, or Bamboo. Azure DevOps keeps its own dedicated variant above.
+    Source {
+        /// `jenkins` | `gitlab` | `bitbucket` | `circleci` | `travis` | `bamboo`.
+        platform: String,
+        /// Host / primary locator: the server URL (Jenkins/GitLab/Bamboo), the
+        /// workspace (Bitbucket), or empty for the cloud default (CircleCI/Travis).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base_url: Option<String>,
+        /// The API token / app password (resolved at use-time).
+        auth: SecretRef,
+        /// Username for basic-auth platforms (Jenkins, Bitbucket).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        username: Option<String>,
+    },
 }
 
 impl ConnectionKind {
@@ -103,6 +118,17 @@ impl ConnectionKind {
                 key: key.as_ref().map(SecretRef::redacted),
                 is_local: *is_local,
                 residency: residency.clone(),
+            },
+            ConnectionKind::Source {
+                platform,
+                base_url,
+                auth,
+                username,
+            } => ConnectionKind::Source {
+                platform: platform.clone(),
+                base_url: base_url.clone(),
+                auth: auth.redacted(),
+                username: username.clone(),
             },
         }
     }
@@ -137,6 +163,7 @@ impl Connection {
             ConnectionKind::AzureDevOps { .. } => "azure-devops",
             ConnectionKind::GitHub { .. } => "github",
             ConnectionKind::Llm { .. } => "llm",
+            ConnectionKind::Source { .. } => "source",
         }
     }
 }

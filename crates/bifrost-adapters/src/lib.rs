@@ -19,6 +19,7 @@ pub mod jenkins;
 pub mod orchestrator;
 pub mod publisher;
 pub mod source;
+pub mod source_factory;
 pub mod travis;
 pub mod validate;
 
@@ -52,6 +53,7 @@ pub use publisher::{
     CommitRequest, CommitResult, GitHubPublisher, MockPublisher, PublishError, Publisher,
 };
 pub use source::{AdapterError, MockSourceAdapter, SourceAdapter};
+pub use source_factory::source_adapter_from;
 pub use travis::TravisAdapter;
 pub use validate::{
     declared_outputs, GitHubRunCollector, GitHubSandboxTrigger, MockRunCollector,
