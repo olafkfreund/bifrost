@@ -79,6 +79,9 @@ impl Default for PriceTable {
         let mut prices = HashMap::new();
         prices.insert("anthropic".to_string(), (5.0, 25.0));
         prices.insert("gemini".to_string(), (1.25, 5.0));
+        // Azure OpenAI — depends on the deployed model; default to a GPT-4o-class
+        // rate, overridable per deployment with PriceTable::with_price.
+        prices.insert("azure-openai".to_string(), (2.5, 10.0));
         // Copilot is seat-licensed — no per-token cost to attribute here.
         prices.insert("copilot".to_string(), (0.0, 0.0));
         // Local / self-hosted providers are free.
