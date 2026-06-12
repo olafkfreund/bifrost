@@ -9,6 +9,7 @@ import type {
   Portfolio,
   ProposalStatus,
   SecretRefView,
+  SourceStats,
 } from '../types'
 import { mockPortfolio } from '../data/portfolio'
 
@@ -52,6 +53,8 @@ export interface BifrostApi {
   getReportPdf(project?: string): Promise<Blob>
   /** Deterministic GitHub Actions cost + capacity forecast (#237). */
   getForecast(): Promise<Forecast>
+  /** Source (Azure DevOps) assessment statistics (#240). */
+  getSourceStats(): Promise<SourceStats>
   /** Migration completeness matrix — every ADO moving part + its status (#238). */
   getCompleteness(): Promise<CompletenessRow[]>
   /** Ask the grounded migration assistant a question (#252). Query-only. */
@@ -373,6 +376,47 @@ class MockBifrostApi implements BifrostApi {
     }
     return f
   }
+  async getSourceStats(): Promise<SourceStats> {
+    const t = mockPortfolio.summary.totals
+    const ps = mockPortfolio.pipelines
+    const byMap = new Map<string, { pipelines: number; yaml: number; classic: number; red: number }>()
+    for (const p of ps) {
+      const c = byMap.get(p.project) ?? { pipelines: 0, yaml: 0, classic: 0, red: 0 }
+      c.pipelines += 1
+      if (p.classification === 'classic') c.classic += 1
+      else c.yaml += 1
+      if (p.riskBand === 'red') c.red += 1
+      byMap.set(p.project, c)
+    }
+    const byProject = [...byMap.entries()]
+      .map(([project, v]) => ({ project, ...v }))
+      .sort((a, b) => b.pipelines - a.pipelines || a.project.localeCompare(b.project))
+    return {
+      org: mockPortfolio.summary.org,
+      pipelines: t.pipelines,
+      projects: t.projects,
+      yaml: t.yaml,
+      classic: t.classic,
+      green: t.green,
+      amber: t.amber,
+      red: t.red,
+      forecastMinutes: t.forecastMinutes,
+      // Representative inventory density (matches the Coverage demo).
+      serviceConnections: 2,
+      variableGroups: 2,
+      secrets: 3,
+      selfHostedRunners: 1,
+      customTaskTypes: 7,
+      actionsAllowlist: 4,
+      byProject,
+      uncollected: [
+        'Last-run date / dormant vs active pipelines',
+        'Historical success-rate and build-duration baseline',
+        'Owning team per pipeline',
+        'Repository size vs GEI limits (40 GiB / 400 MiB)',
+      ],
+    }
+  }
   async getCompleteness(): Promise<CompletenessRow[]> {
     // Representative matrix mirroring `bifrost_core::completeness` over the demo
     // portfolio. Not-yet-inventoried categories are shown honestly, never omitted.
@@ -665,6 +709,11 @@ class HttpBifrostApi implements BifrostApi {
     const res = await fetch(`${this.base}/forecast`, { headers: this.headers() })
     if (!res.ok) throw new Error(`forecast request failed: ${res.status}`)
     return (await res.json()) as Forecast
+  }
+  async getSourceStats(): Promise<SourceStats> {
+    const res = await fetch(`${this.base}/source-stats`, { headers: this.headers() })
+    if (!res.ok) throw new Error(`source-stats request failed: ${res.status}`)
+    return (await res.json()) as SourceStats
   }
   async getCompleteness(): Promise<CompletenessRow[]> {
     const res = await fetch(`${this.base}/completeness`, { headers: this.headers() })

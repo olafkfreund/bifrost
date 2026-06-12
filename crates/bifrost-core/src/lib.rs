@@ -24,6 +24,7 @@ pub mod proposal;
 pub mod report;
 pub mod risk;
 pub mod runbook;
+pub mod source_stats;
 
 pub use assemble::{assemble_workflow, GapFill};
 pub use attest::{
@@ -53,3 +54,4 @@ pub use proposal::{is_legal_transition, Attestation, Proposal, ProposalError};
 pub use report::{report_markdown, report_stats, ReportStats};
 pub use risk::{assess, band_for_score, RiskAssessment, RiskSignals};
 pub use runbook::{gap_is_manual, ChecklistCategory, ChecklistItem, Runbook};
+pub use source_stats::{source_stats, ProjectStat, SourceStats};

@@ -11,6 +11,7 @@ import { ProposalPanel } from './components/ProposalPanel'
 import { DocsPage } from './components/DocsPage'
 import { Forecast } from './components/Forecast'
 import { Completeness } from './components/Completeness'
+import { Assessment } from './components/Assessment'
 import { ChatPopout } from './components/ChatPopout'
 import { ReviewQueue } from './components/ReviewQueue'
 import { Connections } from './components/Connections'
@@ -23,7 +24,15 @@ const api = createApi()
 
 type View = 'heatmap' | 'table'
 type Filter = RiskBand | 'all'
-type Page = 'portfolio' | 'forecast' | 'completeness' | 'review' | 'connections' | 'routing' | 'docs'
+type Page =
+  | 'portfolio'
+  | 'assessment'
+  | 'forecast'
+  | 'completeness'
+  | 'review'
+  | 'connections'
+  | 'routing'
+  | 'docs'
 
 /** Slugify a project name for use in a download filename. */
 function slugify(s: string): string {
@@ -100,6 +109,8 @@ export default function App() {
         <Routing api={api} />
       ) : page === 'forecast' ? (
         <Forecast api={api} />
+      ) : page === 'assessment' ? (
+        <Assessment api={api} />
       ) : page === 'completeness' ? (
         <Completeness api={api} />
       ) : error ? (
