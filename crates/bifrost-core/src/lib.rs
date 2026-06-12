@@ -17,6 +17,7 @@ pub mod connection;
 pub mod conversion;
 pub mod forecast;
 pub mod gap;
+pub mod gei;
 pub mod identity;
 pub mod ingestion;
 pub mod model;
@@ -42,6 +43,7 @@ pub use connection::{ConfigAction, ConfigEvent, Connection, ConnectionKind, Secr
 pub use conversion::{build_pipeline, pipeline_from_dry_run, signals_from_dry_run, PipelineMeta};
 pub use forecast::{forecast, CapacityForecast, Forecast, ProjectForecast, RunnerRate};
 pub use gap::{DryRunResult, Gap, GapKind};
+pub use gei::{gei_coordination, ProjectCoordination, RepoStatus};
 pub use identity::{Identity, Role};
 pub use ingestion::{
     PipelineDefinition, Project, ServiceConnection, SourcePipeline, TaskKind, TaskUsage,

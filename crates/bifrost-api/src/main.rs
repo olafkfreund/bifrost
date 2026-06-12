@@ -1169,6 +1169,13 @@ async fn program_handler(State(state): State<Shared>) -> Json<Vec<bifrost_core::
     Json(bifrost_core::program(&portfolio))
 }
 
+/// `GET /api/gei` (#245) — per-project repo + pipeline coordination. The pipeline
+/// half is real; the repo half is `pendingInventory` until a GEI inventory runs.
+async fn gei_handler(State(state): State<Shared>) -> Json<Vec<bifrost_core::ProjectCoordination>> {
+    let portfolio = state.portfolio.read().await.clone();
+    Json(bifrost_core::gei_coordination(&portfolio))
+}
+
 async fn completeness_handler(
     State(state): State<Shared>,
 ) -> Json<Vec<bifrost_core::CompletenessRow>> {
@@ -2040,6 +2047,7 @@ fn app(state: Shared) -> Router {
         .route("/api/source-stats", get(source_stats_handler))
         .route("/api/readiness", get(readiness_handler))
         .route("/api/program", get(program_handler))
+        .route("/api/gei", get(gei_handler))
         .route("/api/completeness", get(completeness_handler))
         .route("/api/chat", post(chat_handler))
         .route(
