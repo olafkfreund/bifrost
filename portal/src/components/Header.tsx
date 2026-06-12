@@ -1,18 +1,21 @@
 import type { PortfolioSummary } from '../types'
 import type { Theme } from '../lib/theme'
 import { ThemeToggle } from './ThemeToggle'
+import { PaletteToggle } from './PaletteToggle'
 import { Logo } from './Logo'
 
 export function Header({
   summary,
   theme,
   onToggleTheme,
+  onTogglePalette,
   page,
   onNavigate,
 }: {
   summary: PortfolioSummary | null
   theme: Theme
   onToggleTheme: () => void
+  onTogglePalette: () => void
   page: 'portfolio' | 'review' | 'connections' | 'routing' | 'docs'
   onNavigate: (page: 'portfolio' | 'review' | 'connections' | 'routing' | 'docs') => void
 }) {
@@ -74,6 +77,7 @@ export function Header({
               importer {summary.importerVersion}
             </span>
           )}
+          <PaletteToggle theme={theme} onToggle={onTogglePalette} />
           <ThemeToggle theme={theme} onToggle={onToggleTheme} />
         </div>
       </div>

@@ -31,7 +31,7 @@ export default function App() {
   const [orgFilter, setOrgFilter] = useState<string>('all')
   const [page, setPage] = useState<Page>('portfolio')
   const [showWizard, setShowWizard] = useState(() => !localStorage.getItem('bifrost_onboarded'))
-  const [theme, toggleTheme] = useTheme()
+  const [theme, toggleTheme, togglePalette] = useTheme()
 
   useEffect(() => {
     api.getPortfolio().then(setPortfolio).catch((e) => setError(String(e)))
@@ -56,6 +56,7 @@ export default function App() {
         summary={portfolio?.summary ?? null}
         theme={theme}
         onToggleTheme={toggleTheme}
+        onTogglePalette={togglePalette}
         page={page}
         onNavigate={setPage}
       />
