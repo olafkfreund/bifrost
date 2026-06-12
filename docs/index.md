@@ -45,7 +45,7 @@ conversion, one pipeline at a time. Bifrost owns the part nobody else does well:
 | **Deterministic risk** | Risk scoring is computed from explainable factors, not the LLM. The model **explains; it does not score**. |
 | **Grounded generation** | Every LLM request carries the source snippet + the Importer's output + the specific failure. The model fills the gap from that diff — never converts from scratch. |
 | **Attestation-native** | Every decision — who approved what, what changed, why, the validation result — is a signed, exportable attestation. |
-| **Platform-agnostic** | The source adapter is an interface. Azure DevOps, Jenkins, GitLab, and Bitbucket are implemented today; Bamboo and others follow. |
+| **Platform-agnostic** | The source adapter is an interface. **Every source the Importer converts** — Azure DevOps, Jenkins, GitLab, Bitbucket, CircleCI, Travis, and Bamboo — is implemented today, behind one conformance-tested seam. |
 
 ## How it works
 
@@ -57,8 +57,8 @@ CONTROL PLANE (Rust/axum)   job state machine · conversion orchestrator ·
       │ LlmProvider trait → Anthropic · Gemini · Copilot/Models · Azure OpenAI ·
       │                     Vertex AI · Bedrock (gateway) · OpenAI-compat · Ollama (air-gap)
       ▼ shell-out (Docker)            ▼ HTTP
-INGESTION ADAPTERS          EXTERNAL: ADO / Jenkins / GitLab / Bitbucket APIs · GitHub API · GEI
-  gh actions-importer (Docker) · SourceAdapter trait (ADO · Jenkins · GitLab · Bitbucket → …)
+INGESTION ADAPTERS          EXTERNAL: ADO/Jenkins/GitLab/Bitbucket/CircleCI/Travis/Bamboo · GitHub API · GEI
+  gh actions-importer (Docker) · SourceAdapter trait (ADO · Jenkins · GitLab · Bitbucket · CircleCI · Travis · Bamboo)
 ```
 
 The **core loop**, per pipeline: Importer `dry-run` → parse the log for unsupported steps,
