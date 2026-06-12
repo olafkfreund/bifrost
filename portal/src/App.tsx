@@ -9,6 +9,7 @@ import { PipelineTable } from './components/PipelineTable'
 import { PipelineDrawer } from './components/PipelineDrawer'
 import { ProposalPanel } from './components/ProposalPanel'
 import { DocsPage } from './components/DocsPage'
+import { Forecast } from './components/Forecast'
 import { ReviewQueue } from './components/ReviewQueue'
 import { Connections } from './components/Connections'
 import { Routing } from './components/Routing'
@@ -20,7 +21,7 @@ const api = createApi()
 
 type View = 'heatmap' | 'table'
 type Filter = RiskBand | 'all'
-type Page = 'portfolio' | 'review' | 'connections' | 'routing' | 'docs'
+type Page = 'portfolio' | 'forecast' | 'review' | 'connections' | 'routing' | 'docs'
 
 /** Slugify a project name for use in a download filename. */
 function slugify(s: string): string {
@@ -95,6 +96,8 @@ export default function App() {
         <Connections api={api} />
       ) : page === 'routing' ? (
         <Routing api={api} />
+      ) : page === 'forecast' ? (
+        <Forecast api={api} />
       ) : error ? (
         <div className="flex flex-1 items-center justify-center text-[var(--color-risk-red)]">
           Failed to load portfolio: {error}

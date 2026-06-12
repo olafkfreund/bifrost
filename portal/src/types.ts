@@ -200,3 +200,32 @@ export interface JobProgress {
   finished: boolean
   items: JobItem[]
 }
+
+/** One project's slice of the cost forecast. */
+export interface ProjectForecast {
+  project: string
+  pipelines: number
+  minutes: number
+  costUsd: number
+}
+
+/** Capacity figures from the Importer forecast (run-history based). */
+export interface CapacityForecast {
+  peakConcurrency: number
+  medianQueueMinutes: number
+  p50JobMinutes: number
+  p90JobMinutes: number
+  maxJobMinutes: number
+}
+
+/** Deterministic GitHub Actions cost + capacity projection (#237). */
+export interface Forecast {
+  runnerClass: string
+  usdPerMinute: number
+  totalMinutes: number
+  monthlyCostUsd: number
+  annualCostUsd: number
+  byProject: ProjectForecast[]
+  capacity?: CapacityForecast
+  notes: string[]
+}
