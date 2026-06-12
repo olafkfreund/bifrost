@@ -1227,6 +1227,16 @@ enum ConnectionInput {
         #[serde(default)]
         residency: Option<String>,
     },
+    /// A CI/CD source to migrate (#210): jenkins/gitlab/bitbucket/circleci/travis/bamboo.
+    Source {
+        name: String,
+        platform: String,
+        #[serde(default)]
+        base_url: Option<String>,
+        auth: SecretInput,
+        #[serde(default)]
+        username: Option<String>,
+    },
 }
 
 impl ConnectionInput {
@@ -1267,6 +1277,21 @@ impl ConnectionInput {
                     key: key.map(SecretInput::into_ref).transpose()?,
                     is_local,
                     residency,
+                },
+            ),
+            ConnectionInput::Source {
+                name,
+                platform,
+                base_url,
+                auth,
+                username,
+            } => (
+                name,
+                ConnectionKind::Source {
+                    platform,
+                    base_url,
+                    auth: auth.into_ref()?,
+                    username,
                 },
             ),
         })
@@ -2635,6 +2660,34 @@ mod tests {
             .await,
             StatusCode::NOT_FOUND
         );
+    }
+
+    #[tokio::test]
+    async fn source_connection_input_maps_to_the_source_kind() {
+        // A CI/CD source connection (#210) deserializes + maps to ConnectionKind::Source.
+        let body: ConnectionInput = serde_json::from_value(serde_json::json!({
+            "name": "Prod Jenkins",
+            "kind": "source",
+            "platform": "jenkins",
+            "base_url": "https://jenkins.acme",
+            "username": "ci-bot",
+            "auth": { "type": "key-vault", "uri": "https://kv/secrets/jenkins" }
+        }))
+        .unwrap();
+        let (name, kind) = body.into_named_kind().unwrap();
+        assert_eq!(name, "Prod Jenkins");
+        let bifrost_core::ConnectionKind::Source {
+            platform,
+            base_url,
+            username,
+            ..
+        } = kind
+        else {
+            panic!("expected a Source kind");
+        };
+        assert_eq!(platform, "jenkins");
+        assert_eq!(base_url.as_deref(), Some("https://jenkins.acme"));
+        assert_eq!(username.as_deref(), Some("ci-bot"));
     }
 
     #[tokio::test]
