@@ -1,7 +1,7 @@
 ---
 title: Screenshots
 layout: default
-nav_order: 2
+nav_order: 3
 description: "The Bifrost portal — portfolio heatmap, deterministic risk, the three-pane review, the review queue, connections, routing, and themes."
 permalink: /screenshots
 ---

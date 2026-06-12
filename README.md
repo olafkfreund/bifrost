@@ -12,8 +12,9 @@ migration — with a pluggable, **air-gap-capable** multi-model LLM layer.
 [**Documentation & Showcase**](https://bitfrost.freundcloud.com/)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-![Status: Active development](https://img.shields.io/badge/status-M5%20validation-brightgreen)
+![Status: Active development](https://img.shields.io/badge/status-M2--M6%20complete-brightgreen)
 ![Built on](https://img.shields.io/badge/wraps-gh%20actions--importer%20%C2%B7%20GEI-2088FF)
+![Editor](https://img.shields.io/badge/MCP-VS%20Code%20·%20Cursor%20·%20Claude-5A4FCF)
 
 </div>
 
@@ -41,12 +42,20 @@ We **wrap** the official tools; we never reimplement their conversion logic.
   converts a pipeline from scratch.
 - **Attestation-native.** Every decision — who approved what, what changed, why, the validation
   result — is recorded as a signed, exportable attestation.
+- **Works in your editor.** A built-in [MCP server](https://bitfrost.freundcloud.com/mcp) lets an
+  agent in VS Code (or Cursor / Claude Desktop / the Copilot coding agent) query the portfolio and
+  convert a pipeline to a proposed workflow — review-first, with commit triple-gated. Open a legacy
+  `azure-pipelines.yml`, ask once, get a reviewable GitHub workflow with its risks and manual
+  follow-ups spelled out.
+- **Program on GitHub itself.** A dry-run plan for a dedicated repo + org Project (board / roadmap /
+  KPIs), so the migration is tracked and reported on GitHub's own golden-path features.
 
 ## Architecture at a glance
 
 ```
-PORTAL (React/TS)           portfolio heatmap · 3-pane diff · approve/edit · runbook
-      │ REST/SSE
+PORTAL (React/TS)           portfolio heatmap · 3-pane diff · approve/edit · runbook · board
+      │ REST/SSE                                      ▲ REST
+      │                            bifrost-mcp (MCP/stdio) ── VS Code · Cursor · Claude · Copilot
 CONTROL PLANE (Rust/axum)   job state machine · conversion orchestrator ·
       │                     deterministic risk model · attestation + audit log
       │ LlmProvider trait → Anthropic · Gemini · Copilot/Models · Azure OpenAI ·
@@ -57,7 +66,8 @@ INGESTION ADAPTERS          EXTERNAL: ADO REST API · GitHub API · GEI
 ```
 
 Full design: [`bifrost-implementation-plan.md`](bifrost-implementation-plan.md) ·
-rendered on the [docs site](https://bitfrost.freundcloud.com/).
+the [architecture doc](https://bitfrost.freundcloud.com/architecture) (diagrams, flowchart,
+design rationale) · rendered on the [docs site](https://bitfrost.freundcloud.com/).
 
 ## Roadmap
 
@@ -79,6 +89,36 @@ and a per-org **audit pack**. Deployable via [Docker Compose or Helm](deploy/), 
 SSO**, **per-tenant isolation + RBAC**, and a least-privilege **GitHub App** — all opt-in, so the
 air-gapped single-box path stays simple. The core platform (M2–M6) is complete; the M0/M1
 foundations tail remains.
+
+Most recent: a built-in **MCP server** brings the whole flow into the editor — `bifrost_convert`
+(convert a pipeline to a proposed workflow), `bifrost_runbook` (read the manual-task checklist),
+and a triple-gated `bifrost_commit` (open the PR for an approved proposal) — plus a **program board**
+that plans a dedicated repo + org Project (board / roadmap / KPIs) on GitHub itself. See the
+[editor guide](https://bitfrost.freundcloud.com/mcp) and the
+[architecture doc](https://bitfrost.freundcloud.com/architecture).
+
+## Run it (self-host)
+
+The fastest way to a running Bifrost is Docker Compose — SQLite-backed and **air-gap by
+default**, so nothing leaves the box:
+
+```bash
+cd deploy
+docker compose up --build      # portal + API on http://localhost:8080
+```
+
+That's the whole product: open the portal, add a source connection, audit a portfolio, and
+review conversions. Set `BIFROST_SIGNING_KEY` in production (attestation signing), and switch
+to Postgres with `--profile postgres` for the multi-tenant server. Full options — including
+**Entra ID SSO**, RBAC, and the **Helm** chart for Kubernetes — are in [`deploy/`](deploy/).
+
+To drive it from your editor instead, point VS Code (or Cursor / Claude Desktop) at the MCP
+server — see the [editor guide](https://bitfrost.freundcloud.com/mcp).
+
+> Pre-built, signed images on GHCR (`docker pull`, no build) plus SBOMs are on the roadmap
+> ([#279](https://github.com/olafkfreund/bifrost/issues/279),
+> [#280](https://github.com/olafkfreund/bifrost/issues/280)). Today the image builds from
+> source via the command above.
 
 ## Getting started (contributors)
 

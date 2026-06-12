@@ -1,7 +1,7 @@
 ---
 title: Blog
 layout: default
-nav_order: 3
+nav_order: 4
 permalink: /blog
 description: "Notes from building Bifrost — progress, design decisions, and how to use it."
 ---
