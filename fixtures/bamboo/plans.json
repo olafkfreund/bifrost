@@ -1,0 +1,5 @@
+{ "plans": { "plan": [
+  { "key": "PLAT-WEB", "name": "Platform - Web Build", "shortName": "Web Build", "projectKey": "PLAT", "projectName": "Platform" },
+  { "key": "PLAT-API", "name": "Platform - API Build", "shortName": "API Build", "projectKey": "PLAT", "projectName": "Platform" },
+  { "key": "DATA-ETL", "name": "Data - ETL", "shortName": "ETL", "projectKey": "DATA", "projectName": "Data" }
+] } }
