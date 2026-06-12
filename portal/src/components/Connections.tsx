@@ -63,7 +63,13 @@ const LLM_MODELS: Record<string, string[]> = {
     'claude-opus-4-7',
     'claude-opus-4-6',
   ],
-  gemini: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'],
+  gemini: [
+    'gemini-3.5-flash',
+    'gemini-3.1-pro-preview',
+    'gemini-3.1-flash-lite-preview',
+    'gemini-2.5-flash',
+    'gemini-2.5-pro',
+  ],
   'github-models': ['gpt-4o', 'gpt-4o-mini', 'o1', 'o1-mini', 'llama-3.3-70b-instruct'],
 }
 const CUSTOM_MODEL = '__custom'

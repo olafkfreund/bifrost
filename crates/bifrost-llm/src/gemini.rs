@@ -19,7 +19,8 @@ use crate::{
 /// Base for the model endpoints; the model + `:generateContent` are appended.
 const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 /// Default model — overridable via `GEMINI_MODEL`.
-const DEFAULT_MODEL: &str = "gemini-2.5-flash";
+// GA flagship Flash as of the Gemini 3.x generation (ai.google.dev/gemini-api).
+const DEFAULT_MODEL: &str = "gemini-3.5-flash";
 
 /// Calls the Gemini `generateContent` API to fill a single gap.
 #[derive(Debug, Clone)]
@@ -165,8 +166,8 @@ mod tests {
         let p = GeminiProvider::new("key-test", DEFAULT_MODEL);
         assert_eq!(p.name(), "gemini");
         assert!(!p.is_local(), "frontier provider must report non-local");
-        assert_eq!(p.model, "gemini-2.5-flash");
-        assert!(p.endpoint().ends_with("/gemini-2.5-flash:generateContent"));
+        assert_eq!(p.model, "gemini-3.5-flash");
+        assert!(p.endpoint().ends_with("/gemini-3.5-flash:generateContent"));
     }
 
     #[test]
