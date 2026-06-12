@@ -66,26 +66,137 @@ pub fn org_from_url(url: &str) -> &str {
     url.trim_end_matches('/').rsplit('/').next().unwrap_or(url)
 }
 
+/// Which source platform the Importer audits, and how it is configured. Azure
+/// DevOps uses CLI flags for org/project; every other source is configured purely
+/// via environment variables (#208).
+enum ImporterSource {
+    AzureDevOps {
+        organization: String,
+        project: String,
+    },
+    /// A non-ADO source: the Importer subcommand (`jenkins`/`gitlab`/`circle-ci`/
+    /// `travis-ci`/`bamboo`) plus the `(NAME, value)` source-config env vars.
+    Generic {
+        platform: String,
+        /// Label used for the per-pipeline output path (best-effort for dry-run).
+        project: String,
+        env: Vec<(String, String)>,
+    },
+}
+
+/// Map a connection's source platform to the Importer subcommand + its source
+/// configuration environment variables (#208). Returns `None` for a platform the
+/// Importer does not support (e.g. Bitbucket) or a missing required field.
+///
+/// Env-var names are taken from the official Importer docs:
+/// Jenkins `JENKINS_*`, GitLab `GITLAB_*`+`NAMESPACE`, CircleCI `CIRCLE_CI_*`,
+/// Travis `TRAVIS_CI_*`, Bamboo `BAMBOO_*`.
+fn source_subcommand_env(
+    platform: &str,
+    base_url: Option<&str>,
+    namespace: Option<&str>,
+    username: Option<&str>,
+    token: &str,
+) -> Option<(String, Vec<(String, String)>)> {
+    let kv = |k: &str, v: String| (k.to_string(), v);
+    let tok = token.to_string();
+    let (subcommand, env): (&str, Vec<(String, String)>) = match platform {
+        "jenkins" => (
+            "jenkins",
+            vec![
+                kv("JENKINS_ACCESS_TOKEN", tok),
+                kv("JENKINS_USERNAME", username?.to_string()),
+                kv("JENKINS_INSTANCE_URL", base_url?.to_string()),
+            ],
+        ),
+        "gitlab" => (
+            "gitlab",
+            vec![
+                kv("GITLAB_ACCESS_TOKEN", tok),
+                kv(
+                    "GITLAB_INSTANCE_URL",
+                    base_url.unwrap_or("https://gitlab.com").to_string(),
+                ),
+                kv("NAMESPACE", namespace?.to_string()),
+            ],
+        ),
+        "circleci" | "circle-ci" => (
+            "circle-ci",
+            vec![
+                kv("CIRCLE_CI_ACCESS_TOKEN", tok),
+                kv(
+                    "CIRCLE_CI_INSTANCE_URL",
+                    base_url.unwrap_or("https://circleci.com").to_string(),
+                ),
+                kv("CIRCLE_CI_ORGANIZATION", namespace?.to_string()),
+            ],
+        ),
+        "travis" | "travis-ci" => (
+            "travis-ci",
+            vec![
+                kv("TRAVIS_CI_ACCESS_TOKEN", tok),
+                kv(
+                    "TRAVIS_CI_INSTANCE_URL",
+                    base_url.unwrap_or("https://api.travis-ci.com").to_string(),
+                ),
+                kv("TRAVIS_CI_ORGANIZATION", namespace?.to_string()),
+            ],
+        ),
+        "bamboo" => (
+            "bamboo",
+            vec![
+                kv("BAMBOO_ACCESS_TOKEN", tok),
+                kv("BAMBOO_INSTANCE_URL", base_url?.to_string()),
+            ],
+        ),
+        // Bitbucket Pipelines is not supported by gh actions-importer.
+        _ => return None,
+    };
+    Some((subcommand.to_string(), env))
+}
+
 /// Runs the official Importer image as a subprocess.
 pub struct DockerImporter {
     image: String,
-    organization: String,
-    project: String,
+    source: ImporterSource,
 }
 
 impl DockerImporter {
+    /// An Azure DevOps importer for `organization`/`project` (the default source).
     pub fn new(organization: impl Into<String>, project: impl Into<String>) -> Self {
+        Self::with_source(ImporterSource::AzureDevOps {
+            organization: organization.into(),
+            project: project.into(),
+        })
+    }
+
+    /// An importer for a non-ADO source connection (#208). `namespace` is the
+    /// org/group/workspace the Importer audits; `None` for a platform the Importer
+    /// does not support or a missing required field.
+    pub fn for_source(
+        platform: &str,
+        base_url: Option<&str>,
+        namespace: Option<&str>,
+        username: Option<&str>,
+        token: &str,
+    ) -> Option<Self> {
+        let (subcommand, env) =
+            source_subcommand_env(platform, base_url, namespace, username, token)?;
+        Some(Self::with_source(ImporterSource::Generic {
+            platform: subcommand,
+            project: namespace.unwrap_or_default().to_string(),
+            env,
+        }))
+    }
+
+    fn with_source(source: ImporterSource) -> Self {
         // Pin the image via BIFROST_IMPORTER_IMAGE (set it to a digest —
         // `repo@sha256:…` — in production for a reproducible, attestable run).
         let image = std::env::var("BIFROST_IMPORTER_IMAGE")
             .ok()
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| DEFAULT_IMAGE.to_string());
-        Self {
-            image,
-            organization: organization.into(),
-            project: project.into(),
-        }
+        Self { image, source }
     }
 
     /// Derive the organization from `AZDO_ORG_URL`; project supplied by caller.
@@ -93,6 +204,14 @@ impl DockerImporter {
         let url = std::env::var("AZDO_ORG_URL")
             .map_err(|_| ImporterError::Subprocess("AZDO_ORG_URL not set".into()))?;
         Ok(Self::new(org_from_url(&url).to_string(), project))
+    }
+
+    /// The project/namespace label used for per-pipeline output paths.
+    fn project_label(&self) -> &str {
+        match &self.source {
+            ImporterSource::AzureDevOps { project, .. } => project,
+            ImporterSource::Generic { project, .. } => project,
+        }
     }
 
     /// The image reference this importer runs (tag or `repo@sha256:…`).
@@ -132,11 +251,9 @@ impl DockerImporter {
         ImporterError::Subprocess(msg.into())
     }
 
-    /// Read the credentials the Importer needs from the environment.
-    fn creds() -> Result<(String, String), ImporterError> {
-        let gh = std::env::var("GITHUB_TOKEN").map_err(|_| Self::err("GITHUB_TOKEN not set"))?;
-        let pat = std::env::var("AZDO_PAT").map_err(|_| Self::err("AZDO_PAT not set"))?;
-        Ok((gh, pat))
+    /// The GitHub token (the migration target) — required for every source.
+    fn gh_token() -> Result<String, ImporterError> {
+        std::env::var("GITHUB_TOKEN").map_err(|_| Self::err("GITHUB_TOKEN not set"))
     }
 }
 
@@ -182,7 +299,10 @@ impl Importer for DockerImporter {
         // source, and the definition id (in config.json). Audit the project, then
         // read the requested pipeline's report.
         let out_dir = self.run_audit().await?;
-        let pipelines_dir = out_dir.join("report").join("pipelines").join(&self.project);
+        let pipelines_dir = out_dir
+            .join("report")
+            .join("pipelines")
+            .join(self.project_label());
 
         let result = self.read_pipeline(&pipelines_dir, pipeline_id).await;
         let _ = tokio::fs::remove_dir_all(&out_dir).await;
@@ -191,41 +311,47 @@ impl Importer for DockerImporter {
 }
 
 impl DockerImporter {
-    /// Run `audit azure-devops` for the project into a fresh work dir.
-    async fn run_audit(&self) -> Result<PathBuf, ImporterError> {
-        self.run_command(vec![
-            "audit".into(),
-            "azure-devops".into(),
-            "--output-dir".into(),
-            "report".into(),
-            "--azure-devops-organization".into(),
-            self.organization.clone(),
-            "--azure-devops-project".into(),
-            self.project.clone(),
-        ])
-        .await
+    /// Build a `<verb> <platform> --output-dir report [flags]` argv for this source.
+    /// ADO passes org/project as flags; other sources are configured via env vars.
+    fn command_args(&self, verb: &str) -> Vec<String> {
+        match &self.source {
+            ImporterSource::AzureDevOps {
+                organization,
+                project,
+            } => vec![
+                verb.into(),
+                "azure-devops".into(),
+                "--output-dir".into(),
+                "report".into(),
+                "--azure-devops-organization".into(),
+                organization.clone(),
+                "--azure-devops-project".into(),
+                project.clone(),
+            ],
+            ImporterSource::Generic { platform, .. } => vec![
+                verb.into(),
+                platform.clone(),
+                "--output-dir".into(),
+                "report".into(),
+            ],
+        }
     }
 
-    /// Run `forecast azure-devops` for the project into a fresh work dir.
+    /// Run `audit <source>` into a fresh work dir.
+    async fn run_audit(&self) -> Result<PathBuf, ImporterError> {
+        self.run_command(self.command_args("audit")).await
+    }
+
+    /// Run `forecast <source>` into a fresh work dir.
     async fn run_forecast(&self) -> Result<PathBuf, ImporterError> {
-        self.run_command(vec![
-            "forecast".into(),
-            "azure-devops".into(),
-            "--output-dir".into(),
-            "report".into(),
-            "--azure-devops-organization".into(),
-            self.organization.clone(),
-            "--azure-devops-project".into(),
-            self.project.clone(),
-        ])
-        .await
+        self.run_command(self.command_args("forecast")).await
     }
 
     /// Run an Importer subcommand into a fresh work dir and return it. Guards
     /// against filling the disk: a per-file size cap, host-user output (cleanable),
     /// and a redirectable work dir. Callers clean the dir when done.
     async fn run_command(&self, sub_args: Vec<String>) -> Result<PathBuf, ImporterError> {
-        let (gh, pat) = Self::creds()?;
+        let gh = Self::gh_token()?;
         // Work dir — redirectable off a small tmpfs via BIFROST_IMPORTER_WORKDIR.
         let base = std::env::var("BIFROST_IMPORTER_WORKDIR")
             .map(PathBuf::from)
@@ -251,21 +377,33 @@ impl DockerImporter {
             cmd.args(["--user", &user]);
         }
         cmd.args(["-e", "GITHUB_ACCESS_TOKEN", "-e", "GITHUB_INSTANCE_URL"]);
-        cmd.args([
-            "-e",
-            "AZURE_DEVOPS_ACCESS_TOKEN",
-            "-e",
-            "AZURE_DEVOPS_INSTANCE_URL",
-        ]);
+        // Source-config env: forwarded via `-e NAME` and set on the child (never argv).
+        let source_env: Vec<(String, String)> = match &self.source {
+            ImporterSource::AzureDevOps { .. } => {
+                let pat = std::env::var("AZDO_PAT").map_err(|_| Self::err("AZDO_PAT not set"))?;
+                vec![
+                    ("AZURE_DEVOPS_ACCESS_TOKEN".into(), pat),
+                    (
+                        "AZURE_DEVOPS_INSTANCE_URL".into(),
+                        "https://dev.azure.com".into(),
+                    ),
+                ]
+            }
+            ImporterSource::Generic { env, .. } => env.clone(),
+        };
+        for (name, _) in &source_env {
+            cmd.args(["-e", name]);
+        }
         cmd.arg("-v").arg(format!("{}:/data", out_dir.display()));
         cmd.args(["-w", "/data", &self.image]);
         for a in &sub_args {
             cmd.arg(a);
         }
         cmd.env("GITHUB_ACCESS_TOKEN", gh)
-            .env("GITHUB_INSTANCE_URL", "https://github.com")
-            .env("AZURE_DEVOPS_ACCESS_TOKEN", pat)
-            .env("AZURE_DEVOPS_INSTANCE_URL", "https://dev.azure.com");
+            .env("GITHUB_INSTANCE_URL", "https://github.com");
+        for (name, value) in source_env {
+            cmd.env(name, value);
+        }
 
         // Bound the run so a hung Importer/Docker invocation can't stall a job
         // forever (#106). Configurable via BIFROST_IMPORTER_TIMEOUT_SECS (default
@@ -329,7 +467,7 @@ impl DockerImporter {
         }
         Err(Self::err(format!(
             "no report for pipeline '{pipeline_id}' in project '{}'",
-            self.project
+            self.project_label()
         )))
     }
 }
@@ -365,6 +503,56 @@ mod tests {
     fn extracts_org_from_url() {
         assert_eq!(org_from_url("https://dev.azure.com/contoso"), "contoso");
         assert_eq!(org_from_url("https://dev.azure.com/contoso/"), "contoso");
+    }
+
+    #[test]
+    fn source_mapping_picks_subcommand_and_env_per_platform() {
+        // Jenkins: subcommand + JENKINS_* env (token, username, url).
+        let (sub, env) = source_subcommand_env(
+            "jenkins",
+            Some("https://jenkins.acme"),
+            None,
+            Some("ci-bot"),
+            "tok",
+        )
+        .unwrap();
+        assert_eq!(sub, "jenkins");
+        assert!(env.contains(&("JENKINS_ACCESS_TOKEN".into(), "tok".into())));
+        assert!(env.contains(&("JENKINS_USERNAME".into(), "ci-bot".into())));
+        assert!(env.contains(&("JENKINS_INSTANCE_URL".into(), "https://jenkins.acme".into())));
+
+        // GitLab maps the namespace + defaults the instance URL; subcommand "gitlab".
+        let (sub, env) =
+            source_subcommand_env("gitlab", None, Some("acme/team"), None, "t").unwrap();
+        assert_eq!(sub, "gitlab");
+        assert!(env.contains(&("NAMESPACE".into(), "acme/team".into())));
+        assert!(env.contains(&("GITLAB_INSTANCE_URL".into(), "https://gitlab.com".into())));
+
+        // Connection platform names map to the Importer subcommand names.
+        assert_eq!(
+            source_subcommand_env("circleci", None, Some("acme"), None, "t")
+                .unwrap()
+                .0,
+            "circle-ci"
+        );
+        assert_eq!(
+            source_subcommand_env("travis", None, Some("acme"), None, "t")
+                .unwrap()
+                .0,
+            "travis-ci"
+        );
+
+        // Missing required fields / unsupported platform → None.
+        assert!(source_subcommand_env("jenkins", None, None, Some("u"), "t").is_none());
+        assert!(source_subcommand_env("bitbucket", Some("ws"), None, Some("u"), "t").is_none());
+    }
+
+    #[test]
+    fn for_source_builds_a_generic_importer_or_none() {
+        assert!(DockerImporter::for_source("gitlab", None, Some("acme"), None, "t").is_some());
+        assert!(
+            DockerImporter::for_source("bitbucket", Some("ws"), None, Some("u"), "t").is_none()
+        );
     }
 
     #[test]
