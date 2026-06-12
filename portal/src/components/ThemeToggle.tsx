@@ -8,7 +8,7 @@ export function ThemeToggle({ theme, onToggle }: { theme: Theme; onToggle: () =>
       onClick={onToggle}
       title={`Switch to ${next} mode`}
       aria-label={`Switch to ${next} mode`}
-      className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-ink-700 bg-ink-850 text-ink-200 transition hover:border-ink-600 hover:text-ink-100"
+      className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-ink-700 bg-ink-850 text-ink-200 transition hover:border-ink-600 hover:text-ink-100"
     >
       {!isLight(theme) ? (
         // moon

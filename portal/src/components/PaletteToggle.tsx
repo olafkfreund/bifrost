@@ -11,10 +11,10 @@ export function PaletteToggle({ theme, onToggle }: { theme: Theme; onToggle: () 
       onClick={onToggle}
       title={`Switch to ${next} palette`}
       aria-label={`Switch to ${next} palette`}
-      className="inline-flex h-8 items-center gap-1.5 rounded-full border border-ink-700 bg-ink-850 px-3 text-xs font-medium text-ink-200 transition hover:border-ink-600 hover:text-ink-100"
+      className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-ink-700 bg-ink-850 px-3 text-xs font-medium text-ink-200 transition hover:border-ink-600 hover:text-ink-100"
     >
       {/* swatch */}
-      <span className="inline-flex h-3 w-3 items-center justify-center rounded-full bg-brand-500" />
+      <span className="inline-flex h-3 w-3 items-center justify-center rounded-sm bg-brand-500" />
       <span className="capitalize">{palette}</span>
     </button>
   )
