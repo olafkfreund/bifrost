@@ -299,15 +299,36 @@ impl Importer for DockerImporter {
         // source, and the definition id (in config.json). Audit the project, then
         // read the requested pipeline's report.
         let out_dir = self.run_audit().await?;
-        let pipelines_dir = out_dir
-            .join("report")
-            .join("pipelines")
-            .join(self.project_label());
-
-        let result = self.read_pipeline(&pipelines_dir, pipeline_id).await;
+        let base = out_dir.join("report").join("pipelines");
+        // ADO nests per-pipeline output under the project; other sources may write
+        // them flat under `pipelines/`. Try the nested path, then the flat one.
+        let mut result = Err(Self::err("no pipelines directory in audit output"));
+        for dir in pipeline_dir_candidates(&base, self.project_label()) {
+            if tokio::fs::metadata(&dir)
+                .await
+                .map(|m| m.is_dir())
+                .unwrap_or(false)
+            {
+                result = self.read_pipeline(&dir, pipeline_id).await;
+                if result.is_ok() {
+                    break;
+                }
+            }
+        }
         let _ = tokio::fs::remove_dir_all(&out_dir).await;
         result
     }
+}
+
+/// Candidate per-pipeline output directories: the project-nested path (ADO) first
+/// when `label` is non-empty, then the flat `pipelines/` path (other sources).
+fn pipeline_dir_candidates(base: &std::path::Path, label: &str) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if !label.is_empty() {
+        dirs.push(base.join(label));
+    }
+    dirs.push(base.to_path_buf());
+    dirs
 }
 
 impl DockerImporter {
@@ -553,6 +574,18 @@ mod tests {
         assert!(
             DockerImporter::for_source("bitbucket", Some("ws"), None, Some("u"), "t").is_none()
         );
+    }
+
+    #[test]
+    fn pipeline_dir_candidates_prefer_nested_then_flat() {
+        use std::path::Path;
+        let base = Path::new("/out/report/pipelines");
+        // ADO (nested under the project label) first, then the flat fallback.
+        let nested = pipeline_dir_candidates(base, "Storefront");
+        assert_eq!(nested[0], base.join("Storefront"));
+        assert_eq!(nested[1], base);
+        // No label (flat-only source) → just the flat path.
+        assert_eq!(pipeline_dir_candidates(base, ""), vec![base.to_path_buf()]);
     }
 
     #[test]
