@@ -1,4 +1,4 @@
-type Page = 'portfolio' | 'forecast' | 'review' | 'connections' | 'routing' | 'docs'
+type Page = 'portfolio' | 'forecast' | 'completeness' | 'review' | 'connections' | 'routing' | 'docs'
 
 /** Left-rail navigation. Primary work (Workspace) and configuration (Settings)
  * are grouped separately so the change-management surfaces — connections,
@@ -17,6 +17,12 @@ const ICONS: Record<Page, React.ReactNode> = {
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M3 3v18h18" />
       <path d="M7 14l4-4 3 3 5-6" />
+    </svg>
+  ),
+  completeness: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 11l3 3 8-8" />
+      <path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9" />
     </svg>
   ),
   review: (
@@ -50,6 +56,7 @@ const GROUPS: { label: string; items: { id: Page; label: string }[] }[] = [
   { label: 'Workspace', items: [
     { id: 'portfolio', label: 'Portfolio' },
     { id: 'forecast', label: 'Forecast' },
+    { id: 'completeness', label: 'Coverage' },
     { id: 'review', label: 'Review' },
   ] },
   { label: 'Settings', items: [

@@ -218,6 +218,19 @@ export interface CapacityForecast {
   maxJobMinutes: number
 }
 
+/** Status of one migration category in the completeness matrix (#238). */
+export type CategoryStatus = 'auto' | 'review' | 'manual' | 'notInventoried' | 'notApplicable'
+
+/** One ADO moving-part category mapped to its GitHub equivalent + status (#238). */
+export interface CompletenessRow {
+  category: string
+  count: number
+  inventoried: boolean
+  status: CategoryStatus
+  githubEquivalent: string
+  note: string
+}
+
 /** Deterministic GitHub Actions cost + capacity projection (#237). */
 export interface Forecast {
   runnerClass: string
