@@ -14,6 +14,7 @@
 //! [`Router`].
 
 mod anthropic;
+mod azure_openai;
 mod copilot;
 pub mod cost;
 mod gemini;
@@ -22,6 +23,7 @@ mod openai_compatible;
 pub mod resilience;
 
 pub use anthropic::AnthropicProvider;
+pub use azure_openai::AzureOpenAiProvider;
 pub use copilot::CopilotProvider;
 pub use cost::{
     estimate_tokens, CostLedger, JobCost, MeteredProvider, PriceTable, ProviderCost, RateLimiter,

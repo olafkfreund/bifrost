@@ -1227,8 +1227,8 @@ async fn run_conversion(
 ) -> Result<ConversionOutcome, bifrost_adapters::ConversionError> {
     use bifrost_adapters::{DockerImporter, Importer};
     use bifrost_llm::{
-        AnthropicProvider, CopilotProvider, GeminiProvider, LlmProvider, OllamaProvider,
-        OpenAiCompatibleProvider,
+        AnthropicProvider, AzureOpenAiProvider, CopilotProvider, GeminiProvider, LlmProvider,
+        OllamaProvider, OpenAiCompatibleProvider,
     };
 
     let truthy = |v: String| matches!(v.as_str(), "1" | "true" | "yes");
@@ -1262,13 +1262,20 @@ async fn run_conversion(
     let openai_compat = (live && std::env::var("BIFROST_OPENAI_BASE_URL").is_ok())
         .then(OpenAiCompatibleProvider::from_env)
         .and_then(Result::ok);
+    // Azure OpenAI (enterprise Azure): gated on its endpoint var. Its own
+    // is_local flag (AZURE_OPENAI_PRIVATE) decides air-gap eligibility, so it is
+    // not blocked by the frontier `!air_gap` gate.
+    let azure_openai = (live && std::env::var("AZURE_OPENAI_ENDPOINT").is_ok())
+        .then(AzureOpenAiProvider::from_env)
+        .and_then(Result::ok);
     let mock_llm = MockLlmProvider;
 
     let live_llm = anthropic.is_some()
         || gemini.is_some()
         || copilot.is_some()
         || ollama.is_some()
-        || openai_compat.is_some();
+        || openai_compat.is_some()
+        || azure_openai.is_some();
     let mut providers: Vec<&dyn LlmProvider> = Vec::new();
     if let Some(a) = anthropic.as_ref() {
         providers.push(a);
@@ -1284,6 +1291,9 @@ async fn run_conversion(
     }
     if let Some(oc) = openai_compat.as_ref() {
         providers.push(oc);
+    }
+    if let Some(az) = azure_openai.as_ref() {
+        providers.push(az);
     }
     let policy = if live_llm {
         // The tenant's saved routing policy (#158) wins; else the env default.
