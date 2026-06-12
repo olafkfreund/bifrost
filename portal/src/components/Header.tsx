@@ -45,7 +45,7 @@ export function Header({
             <button
               key={p}
               onClick={() => onNavigate(p)}
-              className={`rounded-md px-3 py-1.5 capitalize transition ${
+              className={`whitespace-nowrap rounded-md px-3 py-1.5 capitalize transition ${
                 page === p ? 'bg-ink-800 text-ink-100' : 'text-ink-300 hover:bg-ink-850 hover:text-ink-100'
               }`}
             >
