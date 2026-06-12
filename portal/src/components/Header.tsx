@@ -4,24 +4,22 @@ import { ThemeToggle } from './ThemeToggle'
 import { PaletteToggle } from './PaletteToggle'
 import { Logo } from './Logo'
 
+/** Slim top bar: identity (logo + slogan), the audited org, the air-gap status,
+ * and the appearance toggles. Page navigation lives in the left Sidebar. */
 export function Header({
   summary,
   theme,
   onToggleTheme,
   onTogglePalette,
-  page,
-  onNavigate,
 }: {
   summary: PortfolioSummary | null
   theme: Theme
   onToggleTheme: () => void
   onTogglePalette: () => void
-  page: 'portfolio' | 'review' | 'connections' | 'routing' | 'docs'
-  onNavigate: (page: 'portfolio' | 'review' | 'connections' | 'routing' | 'docs') => void
 }) {
   return (
     <header className="border-b border-ink-800 bg-ink-900/60 backdrop-blur">
-      <div className="mx-auto flex max-w-7xl items-center gap-4 px-6 py-4">
+      <div className="flex items-center gap-4 px-5 py-3">
         <div className="flex items-center gap-3">
           <Logo className="h-7 w-7 text-brand-400" />
           <div className="leading-tight">
@@ -32,33 +30,19 @@ export function Header({
 
         {summary && (
           <>
-            <div className="mx-2 h-8 w-px bg-ink-800" />
+            <div className="mx-1 h-8 w-px bg-ink-800" />
             <div className="flex items-center gap-2 text-sm">
               <span className="text-ink-300">org</span>
-              <span className="rounded-md bg-ink-800 px-2 py-1 font-mono text-ink-100">{summary.org}</span>
+              <span className="tnum rounded-md bg-ink-800 px-2 py-1 font-mono text-ink-100">{summary.org}</span>
             </div>
           </>
         )}
 
-        <nav className="ml-4 hidden items-center gap-1 text-sm sm:flex">
-          {(['portfolio', 'review', 'connections', 'routing', 'docs'] as const).map((p) => (
-            <button
-              key={p}
-              onClick={() => onNavigate(p)}
-              className={`whitespace-nowrap rounded-md px-3 py-1.5 capitalize transition ${
-                page === p ? 'bg-ink-800 text-ink-100' : 'text-ink-300 hover:bg-ink-850 hover:text-ink-100'
-              }`}
-            >
-              {p === 'docs' ? 'Docs & Help' : p}
-            </button>
-          ))}
-        </nav>
-
-        <div className="ml-auto flex items-center gap-3 text-xs">
+        <div className="ml-auto flex items-center gap-2.5 text-xs">
           {summary?.airGap && (
             <span
               title="No public egress — only in-network providers are used"
-              className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-1 font-medium"
+              className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border px-2.5 py-1 font-medium"
               style={{
                 color: 'var(--color-accent-aqua)',
                 borderColor: 'color-mix(in srgb, var(--color-accent-aqua) 35%, transparent)',
@@ -67,14 +51,6 @@ export function Header({
             >
               <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: 'var(--color-accent-aqua)' }} />
               Air-gap
-            </span>
-          )}
-          {summary && (
-            <span
-              title="Pinned tool versions for this audit run — recorded for attestation"
-              className="hidden items-center gap-2 rounded-full border border-ink-700 bg-ink-850 px-2.5 py-1 font-mono text-ink-300 sm:inline-flex"
-            >
-              importer {summary.importerVersion}
             </span>
           )}
           <PaletteToggle theme={theme} onToggle={onTogglePalette} />

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { Pipeline, Portfolio, RiskBand } from './types'
 import { createApi } from './api/client'
 import { Header } from './components/Header'
+import { Sidebar } from './components/Sidebar'
 import { StatCards } from './components/StatCards'
 import { Heatmap } from './components/Heatmap'
 import { PipelineTable } from './components/PipelineTable'
@@ -83,11 +84,12 @@ export default function App() {
         theme={theme}
         onToggleTheme={toggleTheme}
         onTogglePalette={togglePalette}
-        page={page}
-        onNavigate={setPage}
       />
 
-      {page === 'docs' ? (
+      <div className="flex min-h-0 flex-1">
+        <Sidebar page={page} onNavigate={setPage} importerVersion={portfolio?.summary.importerVersion} />
+        <div className="flex min-w-0 flex-1 flex-col">
+          {page === 'docs' ? (
         <DocsPage />
       ) : page === 'connections' ? (
         <Connections api={api} />
@@ -237,7 +239,9 @@ export default function App() {
         <button onClick={() => setShowWizard(true)} className="underline hover:text-ink-300">
           Run setup
         </button>
-      </footer>
+          </footer>
+        </div>
+      </div>
 
       {showWizard && (
         <OnboardingWizard
