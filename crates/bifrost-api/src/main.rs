@@ -11,6 +11,7 @@
 mod auth;
 mod jobs;
 mod metrics;
+mod pdf;
 mod sample;
 mod secrets;
 mod store;
@@ -1125,6 +1126,28 @@ async fn report_json(
     }))
 }
 
+/// `GET /api/report.pdf[?project=…]` (#221) — the same report as a downloadable
+/// PDF for the change advisory board. Read-only.
+async fn report_pdf_handler(
+    State(state): State<Shared>,
+    axum::extract::Query(q): axum::extract::Query<ReportQuery>,
+) -> Response {
+    let portfolio = state.portfolio.read().await.clone();
+    let md = bifrost_core::report_markdown(&portfolio, q.project.as_deref());
+    let bytes = pdf::report_pdf(&md);
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "application/pdf"),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                "attachment; filename=\"migration-status-report.pdf\"",
+            ),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
 #[derive(Deserialize)]
 struct AirGapBody {
     enabled: bool,
@@ -1828,6 +1851,7 @@ fn app(state: Shared) -> Router {
         .route("/api/providers", get(providers))
         .route("/api/report", get(report))
         .route("/api/report.json", get(report_json))
+        .route("/api/report.pdf", get(report_pdf_handler))
         .route("/api/proposals/:id/runbook", patch(set_runbook_item))
         .route("/api/jobs/convert", post(start_convert_job))
         .route("/api/jobs/:id", get(job_status))
