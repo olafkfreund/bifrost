@@ -248,6 +248,24 @@ export interface SourceStats {
   uncollected: string[]
 }
 
+/** One migration wave with its cohort facts + progress (#242). */
+export interface WavePlan {
+  wave: number
+  name: string
+  rationale: string
+  pipelines: number
+  green: number
+  amber: number
+  red: number
+  yaml: number
+  classic: number
+  forecastMinutes: number
+  notStarted: number
+  inProgress: number
+  done: number
+  projects: string[]
+}
+
 /** Status of a target-readiness checklist item (#239). */
 export type ReadinessStatus = 'ready' | 'action' | 'unverified' | 'blocked'
 

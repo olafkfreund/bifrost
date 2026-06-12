@@ -20,6 +20,7 @@ pub mod identity;
 pub mod ingestion;
 pub mod model;
 pub mod parity;
+pub mod program;
 pub mod proposal;
 pub mod readiness;
 pub mod report;
@@ -51,6 +52,7 @@ pub use model::{
 pub use parity::{
     compare as compare_parity, ParityReport, ParityVerdict, RunFacts, SetDiff, SMOKE_PARITY_CAVEAT,
 };
+pub use program::{program, WavePlan};
 pub use proposal::{is_legal_transition, Attestation, Proposal, ProposalError};
 pub use readiness::{readiness, ReadinessItem, ReadinessStatus};
 pub use report::{report_markdown, report_stats, ReportStats};

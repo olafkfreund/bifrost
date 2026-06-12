@@ -1144,6 +1144,14 @@ async fn readiness_handler(State(state): State<Shared>) -> Json<Vec<bifrost_core
     Json(bifrost_core::readiness(&portfolio))
 }
 
+/// `GET /api/program` (#242) — the wave/cohort plan: pipelines grouped into
+/// Pilot / Early / Late waves by difficulty, with per-wave risk, forecast, and
+/// lifecycle progress. Deterministic.
+async fn program_handler(State(state): State<Shared>) -> Json<Vec<bifrost_core::WavePlan>> {
+    let portfolio = state.portfolio.read().await.clone();
+    Json(bifrost_core::program(&portfolio))
+}
+
 async fn completeness_handler(
     State(state): State<Shared>,
 ) -> Json<Vec<bifrost_core::CompletenessRow>> {
@@ -2014,6 +2022,7 @@ fn app(state: Shared) -> Router {
         .route("/api/forecast", get(forecast_handler))
         .route("/api/source-stats", get(source_stats_handler))
         .route("/api/readiness", get(readiness_handler))
+        .route("/api/program", get(program_handler))
         .route("/api/completeness", get(completeness_handler))
         .route("/api/chat", post(chat_handler))
         .route("/api/report", get(report))
