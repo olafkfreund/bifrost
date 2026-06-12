@@ -323,12 +323,17 @@ pub enum ImporterError {
 }
 
 /// Estimated GitHub Actions runner usage from `gh actions-importer forecast`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+// No `Eq` — `capacity` carries `f64`s.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Forecast {
     /// Estimated total runner-minutes/month across the org.
     pub total_minutes: u32,
     /// Per-pipeline estimates by pipeline name (best-effort from the report).
     pub per_pipeline: Vec<(String, u32)>,
+    /// Capacity figures from the report's Total section — peak concurrency,
+    /// queue time, and job-duration percentiles (#248). `None` if the report
+    /// (or our older representative fixture) carried no capacity sub-sections.
+    pub capacity: Option<bifrost_core::CapacityForecast>,
 }
 
 /// Parse a `forecast_report.md` into a [`Forecast`]. Tolerant by design: it keys
@@ -341,15 +346,35 @@ pub fn parse_forecast(md: &str) -> Forecast {
     let mut current: Option<String> = None;
     let mut in_total = false;
 
+    let mut cap = CapAccum::default();
+    let mut cap_section: Option<CapSection> = None;
+
     for line in md.lines() {
         let t = line.trim();
         if let Some(h) = t.strip_prefix("## ") {
             in_total = h.trim().eq_ignore_ascii_case("total");
             current = None;
+            cap_section = None;
+            continue;
+        }
+        // Capacity sub-sections live under `## Total` as `#### Execution time` etc.
+        // (h4, so the per-pipeline `### ` parser never catches them).
+        if let Some(h) = t.strip_prefix("#### ") {
+            let h = h.to_ascii_lowercase();
+            cap_section = if h.contains("execution") {
+                Some(CapSection::Execution)
+            } else if h.contains("queue") {
+                Some(CapSection::Queue)
+            } else if h.contains("concurrent") {
+                Some(CapSection::Concurrent)
+            } else {
+                None
+            };
             continue;
         }
         if let Some(name) = t.strip_prefix("### ") {
             current = Some(name.trim().to_string());
+            cap_section = None;
             continue;
         }
         if let Some(n) = runner_minutes(t) {
@@ -359,15 +384,76 @@ pub fn parse_forecast(md: &str) -> Forecast {
                 None => {}
             }
         }
+        // Capacity metrics: `- Median: 4.5 minutes`, `- P90: 12`, `- Max: 9`.
+        if in_total {
+            if let Some(section) = cap_section {
+                if let Some((label, v)) = metric(t) {
+                    match (section, label.as_str()) {
+                        (CapSection::Execution, "median") => cap.exec_median = Some(v),
+                        (CapSection::Execution, "p90") => cap.exec_p90 = Some(v),
+                        (CapSection::Execution, "max") => cap.exec_max = Some(v),
+                        (CapSection::Queue, "median") => cap.queue_median = Some(v),
+                        (CapSection::Concurrent, "p90") => cap.conc_p90 = Some(v),
+                        (CapSection::Concurrent, "max") => cap.conc_max = Some(v),
+                        _ => {}
+                    }
+                }
+            }
+        }
     }
 
     if total == 0 {
         total = per_pipeline.iter().map(|(_, m)| m).sum();
     }
+    let capacity =
+        if cap.exec_median.is_some() || cap.conc_max.is_some() || cap.queue_median.is_some() {
+            Some(bifrost_core::CapacityForecast {
+                peak_concurrency: cap.conc_max.or(cap.conc_p90).unwrap_or(0.0).round() as u32,
+                median_queue_minutes: cap.queue_median.unwrap_or(0.0),
+                p50_job_minutes: cap.exec_median.unwrap_or(0.0),
+                p90_job_minutes: cap.exec_p90.unwrap_or(0.0),
+                max_job_minutes: cap.exec_max.unwrap_or(0.0),
+            })
+        } else {
+            None
+        };
     Forecast {
         total_minutes: total,
         per_pipeline,
+        capacity,
     }
+}
+
+/// Which capacity sub-section of the forecast report we're reading.
+#[derive(Clone, Copy, PartialEq)]
+enum CapSection {
+    Execution,
+    Queue,
+    Concurrent,
+}
+
+/// Accumulates the capacity metrics while parsing.
+#[derive(Default)]
+struct CapAccum {
+    exec_median: Option<f64>,
+    exec_p90: Option<f64>,
+    exec_max: Option<f64>,
+    queue_median: Option<f64>,
+    conc_p90: Option<f64>,
+    conc_max: Option<f64>,
+}
+
+/// A `- Label: value …` bullet → (lowercased label, numeric value).
+fn metric(line: &str) -> Option<(String, f64)> {
+    let t = line.trim_start_matches(['-', '*', ' ']);
+    let (label, rest) = t.split_once(':')?;
+    let num: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == ' ' || *c == ',')
+        .filter(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let v: f64 = num.parse().ok()?;
+    Some((label.trim().to_ascii_lowercase(), v))
 }
 
 /// The runner-minutes figure on a report line (commas stripped), if any.

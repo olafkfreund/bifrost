@@ -329,6 +329,14 @@ pub fn portfolio() -> Portfolio {
                     },
                 ],
             }],
+            // Illustrative capacity so the offline Forecast view is complete (#248).
+            forecast_capacity: Some(bifrost_core::CapacityForecast {
+                peak_concurrency: 9,
+                median_queue_minutes: 0.8,
+                p50_job_minutes: 4.5,
+                p90_job_minutes: 12.0,
+                max_job_minutes: 38.0,
+            }),
         },
     }
 }

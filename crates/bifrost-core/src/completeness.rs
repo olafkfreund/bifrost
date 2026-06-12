@@ -239,6 +239,7 @@ mod tests {
                 project: "P".into(),
             }],
             variable_groups: vec![],
+            forecast_capacity: None,
         };
         let rows = completeness(&portfolio(10, 2, audit));
         let by = |c: &str| rows.iter().find(|r| r.category == c).unwrap().clone();

@@ -1134,10 +1134,11 @@ async fn report(
 /// report is wired in a follow-up, so `capacity` is `None` on the live path.
 async fn forecast_handler(State(state): State<Shared>) -> Json<bifrost_core::Forecast> {
     let portfolio = state.portfolio.read().await.clone();
-    Json(bifrost_core::forecast(
-        &portfolio.pipelines,
-        &bifrost_core::RunnerRate::default(),
-    ))
+    let mut f = bifrost_core::forecast(&portfolio.pipelines, &bifrost_core::RunnerRate::default());
+    // Real capacity (concurrency/queue/percentiles) from the live Importer
+    // forecast, carried on the audit (#248); `None` until a live forecast ran.
+    f.capacity = portfolio.audit.forecast_capacity.clone();
+    Json(f)
 }
 
 /// `GET /api/completeness` (#238) — the migration completeness matrix: every ADO

@@ -65,6 +65,15 @@ mod tests {
             forecast.total_minutes > 0 && !forecast.per_pipeline.is_empty(),
             "forecast fixture should yield a total + per-pipeline estimates"
         );
+        // Capacity (#248): the Total section's Execution/Queue/Concurrent sub-sections.
+        let cap = forecast
+            .capacity
+            .expect("forecast fixture should yield capacity");
+        assert_eq!(cap.peak_concurrency, 9); // Concurrent jobs Max
+        assert_eq!(cap.p50_job_minutes, 4.5); // Execution Median
+        assert_eq!(cap.p90_job_minutes, 12.0); // Execution P90
+        assert_eq!(cap.max_job_minutes, 38.0); // Execution Max
+        assert_eq!(cap.median_queue_minutes, 0.8); // Queue Median
         assert!(!SOURCE_PIPELINE_YAML.is_empty());
         assert!(!DRY_RUN_CONVERTED_YAML.is_empty());
 
