@@ -1128,6 +1128,14 @@ async fn forecast_handler(State(state): State<Shared>) -> Json<bifrost_core::For
 /// moving-part category mapped to its GitHub equivalent and a status. Categories
 /// Bifrost cannot yet enumerate are flagged `notInventoried` (never omitted), so
 /// nothing is silently dropped. Deterministic — no LLM.
+/// `GET /api/source-stats` (#240) — the source (Azure DevOps) assessment:
+/// pipeline mix, risk, inventory density, and an honest list of what is not yet
+/// collected. Deterministic.
+async fn source_stats_handler(State(state): State<Shared>) -> Json<bifrost_core::SourceStats> {
+    let portfolio = state.portfolio.read().await.clone();
+    Json(bifrost_core::source_stats(&portfolio))
+}
+
 async fn completeness_handler(
     State(state): State<Shared>,
 ) -> Json<Vec<bifrost_core::CompletenessRow>> {
@@ -1996,6 +2004,7 @@ fn app(state: Shared) -> Router {
         .route("/api/settings/air-gap", put(set_air_gap_setting))
         .route("/api/providers", get(providers))
         .route("/api/forecast", get(forecast_handler))
+        .route("/api/source-stats", get(source_stats_handler))
         .route("/api/completeness", get(completeness_handler))
         .route("/api/chat", post(chat_handler))
         .route("/api/report", get(report))

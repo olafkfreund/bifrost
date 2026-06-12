@@ -218,6 +218,36 @@ export interface CapacityForecast {
   maxJobMinutes: number
 }
 
+/** One project's source-side counts (#240). */
+export interface ProjectStat {
+  project: string
+  pipelines: number
+  yaml: number
+  classic: number
+  red: number
+}
+
+/** Source (Azure DevOps) assessment statistics (#240). */
+export interface SourceStats {
+  org: string
+  pipelines: number
+  projects: number
+  yaml: number
+  classic: number
+  green: number
+  amber: number
+  red: number
+  forecastMinutes: number
+  serviceConnections: number
+  variableGroups: number
+  secrets: number
+  selfHostedRunners: number
+  customTaskTypes: number
+  actionsAllowlist: number
+  byProject: ProjectStat[]
+  uncollected: string[]
+}
+
 /** Status of one migration category in the completeness matrix (#238). */
 export type CategoryStatus = 'auto' | 'review' | 'manual' | 'notInventoried' | 'notApplicable'
 
