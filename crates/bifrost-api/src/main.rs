@@ -1083,12 +1083,22 @@ async fn providers(
     }))
 }
 
-/// `GET /api/report` (#204) — the pre-migration status report as Markdown, for
-/// sharing with stakeholders before any change. Read-only; generated from the
-/// current portfolio audit (no changes are made).
-async fn report(State(state): State<Shared>) -> Response {
+/// Query for the report endpoints: optionally scope to one project (#220).
+#[derive(Deserialize)]
+struct ReportQuery {
+    #[serde(default)]
+    project: Option<String>,
+}
+
+/// `GET /api/report[?project=…]` (#204, #220) — the pre-migration status report as
+/// Markdown, optionally scoped to a single project (its owner / change board).
+/// Read-only; generated from the current portfolio audit (no changes are made).
+async fn report(
+    State(state): State<Shared>,
+    axum::extract::Query(q): axum::extract::Query<ReportQuery>,
+) -> Response {
     let portfolio = state.portfolio.read().await.clone();
-    let md = bifrost_core::report_markdown(&portfolio);
+    let md = bifrost_core::report_markdown(&portfolio, q.project.as_deref());
     (
         [(
             axum::http::header::CONTENT_TYPE,
@@ -1099,14 +1109,19 @@ async fn report(State(state): State<Shared>) -> Response {
         .into_response()
 }
 
-/// `GET /api/report.json` (#204) — the status report's headline stats + summary +
-/// the Markdown body, for the portal and automation.
-async fn report_json(State(state): State<Shared>) -> Json<Value> {
+/// `GET /api/report.json[?project=…]` (#204, #220) — the report's headline stats +
+/// summary + the Markdown body, for the portal and automation.
+async fn report_json(
+    State(state): State<Shared>,
+    axum::extract::Query(q): axum::extract::Query<ReportQuery>,
+) -> Json<Value> {
     let portfolio = state.portfolio.read().await.clone();
+    let project = q.project.as_deref();
     Json(json!({
-        "stats": bifrost_core::report_stats(&portfolio),
+        "stats": bifrost_core::report_stats(&portfolio, project),
         "summary": portfolio.summary,
-        "markdown": bifrost_core::report_markdown(&portfolio),
+        "project": q.project,
+        "markdown": bifrost_core::report_markdown(&portfolio, project),
     }))
 }
 

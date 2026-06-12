@@ -39,8 +39,8 @@ pub use ingestion::{
     VariableGroup, VariableRef,
 };
 pub use model::{
-    Classification, Pipeline, Portfolio, PortfolioSummary, PortfolioTotals, ProposalStatus,
-    RiskBand, RiskFactor,
+    Classification, Pipeline, Portfolio, PortfolioAudit, PortfolioSummary, PortfolioTotals,
+    ProposalStatus, RiskBand, RiskFactor,
 };
 pub use parity::{
     compare as compare_parity, ParityReport, ParityVerdict, RunFacts, SetDiff, SMOKE_PARITY_CAVEAT,
