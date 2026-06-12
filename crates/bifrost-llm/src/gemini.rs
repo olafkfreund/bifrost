@@ -97,6 +97,28 @@ impl LlmProvider for GeminiProvider {
         }
         parse_gap_fill(&answer)
     }
+
+    async fn chat(&self, prompt: &str) -> Result<String, LlmError> {
+        let body = GenerateRequest {
+            contents: vec![Content {
+                parts: vec![Part { text: prompt }],
+            }],
+        };
+        let text = crate::http_text_with_retry("gemini", || {
+            self.client
+                .post(self.endpoint())
+                .header("x-goog-api-key", &self.api_key)
+                .json(&body)
+        })
+        .await?;
+        let parsed: GenerateResponse = serde_json::from_str(&text)
+            .map_err(|e| LlmError::Parse(format!("response envelope: {e}: {text}")))?;
+        let answer = parsed.text();
+        if answer.is_empty() {
+            return Err(LlmError::Parse(format!("no text in response: {text}")));
+        }
+        Ok(answer)
+    }
 }
 
 // --- Generative Language API wire types (only the fields we use) ---
