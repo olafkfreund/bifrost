@@ -239,6 +239,9 @@ async fn convert(
     let outcome = run_conversion(&id, project.as_deref(), policy)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // Per-job LLM token/cost accounting (#104) — surfaced on the response for cost
+    // control. Captured before the proposal/runbook are moved into the record.
+    let cost = outcome.cost;
     let rec = StoredProposal {
         proposal: outcome.proposal,
         runbook: outcome.runbook,
@@ -247,7 +250,9 @@ async fn convert(
         tenant: caller.tenant,
     };
     state.store.put(&rec).await.map_err(internal)?;
-    Ok(Json(record_json(&rec)))
+    let mut body = record_json(&rec);
+    body["cost"] = serde_json::to_value(&cost).unwrap_or(Value::Null);
+    Ok(Json(body))
 }
 
 /// Body of `POST /api/proposals/:id/transition`: the target lifecycle state and

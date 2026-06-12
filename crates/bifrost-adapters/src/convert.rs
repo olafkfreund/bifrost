@@ -18,7 +18,10 @@ use bifrost_core::{
     assemble_workflow, assess, gap_is_manual, signals_from_dry_run, ChecklistCategory,
     ChecklistItem, Classification, Gap, GapFill, GapKind, Proposal, RiskAssessment, Runbook,
 };
-use bifrost_llm::{GapFillRequest, LlmError, Router, TaskClass, GAP_FILL_PROMPT_ID};
+use bifrost_llm::{
+    CostLedger, GapFillRequest, JobCost, LlmError, LlmProvider, MeteredProvider, RateLimiter,
+    Router, TaskClass, TokenBudget, GAP_FILL_PROMPT_ID,
+};
 
 use crate::importer::{Importer, ImporterError};
 
@@ -28,6 +31,9 @@ use crate::importer::{Importer, ImporterError};
 pub struct ConversionOutcome {
     pub proposal: Proposal,
     pub runbook: Runbook,
+    /// Per-job LLM token/cost accounting (#104). Empty for classic pipelines
+    /// (no gap-fill ran) and air-gap-free local runs (tokens counted, cost $0).
+    pub cost: JobCost,
 }
 
 /// Errors the conversion loop surfaces, wrapping its collaborators.
@@ -178,6 +184,13 @@ pub async fn convert_pipeline(
     // auditor can prove e.g. only a local model touched this pipeline in air-gap.
     let mut providers_used: Vec<String> = Vec::new();
 
+    // Per-job token/cost accounting (#104). The ledger accumulates across every
+    // gap; an optional token budget and frontier concurrency cap come from the
+    // environment (opt-in, defaults are unlimited / unthrottled).
+    let ledger = CostLedger::default();
+    let budget = job_token_budget();
+    let limiter = llm_rate_limiter();
+
     for gap in dry.gaps.iter().filter(|g| !gap_is_manual(g)) {
         let provider = router.route(task_class_for(gap))?;
         providers_used.push(provider.name().to_string());
@@ -190,7 +203,13 @@ pub async fn convert_pipeline(
             importer_message: gap.detail.clone(),
             repo_context: context.clone(),
         };
-        let response = provider.fill_gap(&request).await?;
+        // Meter the routed provider: budget-gate, rate-limit frontiers, and record
+        // usage into the shared ledger. The wrapper is itself an LlmProvider.
+        let mut metered = MeteredProvider::new(provider, ledger.clone()).with_budget(budget);
+        if let Some(limiter) = &limiter {
+            metered = metered.with_rate_limit(limiter.clone());
+        }
+        let response = metered.fill_gap(&request).await?;
 
         fills.push(GapFill {
             construct: gap.construct.clone(),
@@ -227,7 +246,34 @@ pub async fn convert_pipeline(
     providers_used.dedup();
     proposal.llm_providers = providers_used;
 
-    Ok(ConversionOutcome { proposal, runbook })
+    let cost = JobCost::from_ledger(&ledger);
+    Ok(ConversionOutcome {
+        proposal,
+        runbook,
+        cost,
+    })
+}
+
+/// The per-job token budget from `BIFROST_TOKEN_BUDGET` (total tokens); unlimited
+/// when unset, empty, zero, or unparseable.
+fn job_token_budget() -> TokenBudget {
+    match std::env::var("BIFROST_TOKEN_BUDGET")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+    {
+        Some(n) if n > 0 => TokenBudget::tokens(n),
+        _ => TokenBudget::unlimited(),
+    }
+}
+
+/// A frontier concurrency cap from `BIFROST_LLM_MAX_CONCURRENCY`; `None` (no cap)
+/// when unset, zero, or unparseable.
+fn llm_rate_limiter() -> Option<RateLimiter> {
+    std::env::var("BIFROST_LLM_MAX_CONCURRENCY")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .map(RateLimiter::concurrency)
 }
 
 const CLASSIC_BANNER: &str = "\
@@ -293,7 +339,12 @@ fn classic_outcome(
         assessment,
     );
 
-    ConversionOutcome { proposal, runbook }
+    // No gap-fill runs for classic pipelines, so there is nothing to meter.
+    ConversionOutcome {
+        proposal,
+        runbook,
+        cost: JobCost::default(),
+    }
 }
 
 /// Route a fillable gap by intent: partial constructs are mechanical reshaping
@@ -416,6 +467,17 @@ mod tests {
         // environment + the namespaced custom task), not the gap-fills.
         assert_eq!(outcome.runbook.len(), 4);
         assert!(!p.proposed_yaml.contains("AZURE_CLIENT_SECRET"));
+
+        // Per-job token/cost accounting (#104): the two fillable gaps were metered
+        // through the local mock provider — tokens counted, cost $0 (local is free).
+        assert_eq!(outcome.cost.calls, 2, "one metered call per fillable gap");
+        assert!(
+            outcome.cost.total_tokens > 0,
+            "tokens are estimated + recorded"
+        );
+        assert_eq!(outcome.cost.total_cost_usd, 0.0, "local provider is free");
+        assert_eq!(outcome.cost.by_provider.len(), 1);
+        assert_eq!(outcome.cost.by_provider[0].provider, "mock");
     }
 
     #[tokio::test]
