@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { BifrostApi, RoutingPolicy } from '../api/client'
+import type { BifrostApi, ProviderInfo, RoutingPolicy } from '../api/client'
 
 type Klass = keyof RoutingPolicy
 
@@ -14,19 +14,32 @@ export function Routing({ api }: { api: BifrostApi }) {
   const [airGap, setAirGap] = useState(false)
   const [airGapLocked, setAirGapLocked] = useState(false)
   const [togglingAirGap, setTogglingAirGap] = useState(false)
+  const [providers, setProviders] = useState<ProviderInfo[]>([])
+  const [focused, setFocused] = useState<Klass>('bulk')
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
-    Promise.all([api.getRouting(), api.getSettings()])
-      .then(([{ policy }, settings]) => {
+    Promise.all([api.getRouting(), api.getSettings(), api.getProviders()])
+      .then(([{ policy }, settings, prov]) => {
         setPolicy(policy)
         setAirGap(settings.airGap)
         setAirGapLocked(settings.airGapLocked)
+        setProviders(prov.catalog)
       })
       .catch((e) => setError(String(e)))
   }, [api])
+
+  // Append a provider name to the last-focused class list (if not already there).
+  function addProvider(name: string) {
+    setSaved(false)
+    setPolicy((prev) =>
+      prev && !prev[focused].includes(name)
+        ? { ...prev, [focused]: [...prev[focused], name] }
+        : prev,
+    )
+  }
 
   async function toggleAirGap() {
     setError(null)
@@ -119,6 +132,43 @@ export function Routing({ api }: { api: BifrostApi }) {
           )}
         </div>
       </div>
+
+      {providers.length > 0 && (
+        <div className="mt-4 rounded-xl border border-ink-800 bg-ink-900/40 p-4">
+          <div className="text-sm font-medium text-ink-100">Providers</div>
+          <p className="mt-0.5 text-xs text-ink-400">
+            Click a configured provider to add it to the focused list below. To enable one, add an
+            LLM connection on the <span className="font-medium text-ink-200">Connections</span> page
+            (recommended), or set its environment variable.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {providers.map((p) => (
+              <button
+                key={p.name}
+                onClick={() => p.active && addProvider(p.name)}
+                disabled={!p.active}
+                title={
+                  p.active
+                    ? `${p.label} — click to add to "${focused}"`
+                    : `${p.label} — not configured. Add a connection or set ${p.enableEnv}.`
+                }
+                className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-1 text-xs font-medium transition ${
+                  p.active
+                    ? 'border-[var(--color-risk-green)]/40 bg-[var(--color-risk-green)]/10 text-[var(--color-risk-green)] hover:bg-[var(--color-risk-green)]/20'
+                    : 'cursor-not-allowed border-ink-800 bg-ink-900 text-ink-500'
+                }`}
+              >
+                <span
+                  className="h-1.5 w-1.5 shrink-0 rounded-full"
+                  style={{ backgroundColor: p.active ? 'var(--color-risk-green)' : 'var(--color-ink-600)' }}
+                />
+                {p.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {error && (
         <div className="mt-4 rounded-lg border border-[var(--color-risk-red)]/40 bg-[var(--color-risk-red)]/10 px-4 py-2 text-sm text-[var(--color-risk-red)]">
           {error}
@@ -133,7 +183,12 @@ export function Routing({ api }: { api: BifrostApi }) {
             <div key={key} className="rounded-xl border border-ink-800 bg-ink-900/40 p-4">
               <label className="mb-1 block text-sm font-medium text-ink-100">{title}</label>
               <p className="mb-2 text-xs text-ink-400">{hint}</p>
-              <input className={input} value={policy[key].join(', ')} onChange={(e) => update(key, e.target.value)} />
+              <input
+                className={input}
+                value={policy[key].join(', ')}
+                onFocus={() => setFocused(key)}
+                onChange={(e) => update(key, e.target.value)}
+              />
             </div>
           ))}
           <div className="flex items-center gap-3">

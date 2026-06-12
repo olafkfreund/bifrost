@@ -42,6 +42,26 @@ export interface BifrostApi {
   getSettings(): Promise<Settings>
   /** Toggle the runtime air-gap posture (Admin-only). */
   setAirGap(enabled: boolean): Promise<Settings>
+  /** LLM providers routable for this tenant + how to enable the rest (#197). */
+  getProviders(): Promise<ProvidersView>
+}
+
+/** One LLM provider in the routing catalog (#197). */
+export interface ProviderInfo {
+  /** The exact name to use in the routing policy. */
+  name: string
+  label: string
+  active: boolean
+  viaConnection: boolean
+  viaEnv: boolean
+  /** Env var(s) that enable it (alternative to a portal connection). */
+  enableEnv: string
+}
+
+export interface ProvidersView {
+  live: boolean
+  available: string[]
+  catalog: ProviderInfo[]
 }
 
 /** Control-plane settings surfaced to the portal (#190). */
@@ -302,6 +322,24 @@ class MockBifrostApi implements BifrostApi {
     this.airGap = enabled
     return { airGap: enabled, airGapLocked: false, live: false }
   }
+  async getProviders(): Promise<ProvidersView> {
+    const cat = (
+      name: string,
+      label: string,
+      active: boolean,
+      enableEnv: string,
+    ): ProviderInfo => ({ name, label, active, viaConnection: false, viaEnv: active, enableEnv })
+    const catalog = [
+      cat('anthropic', 'Anthropic (Claude)', true, 'ANTHROPIC_API_KEY'),
+      cat('gemini', 'Google Gemini (AI Studio)', false, 'GEMINI_API_KEY'),
+      cat('copilot', 'GitHub Copilot / Models', false, 'GITHUB_MODELS_TOKEN'),
+      cat('azure-openai', 'Azure OpenAI Service', false, 'AZURE_OPENAI_ENDPOINT'),
+      cat('vertex', 'GCP Vertex AI', false, 'VERTEX_PROJECT + VERTEX_TOKEN'),
+      cat('openai-compatible', 'OpenAI-compatible (incl. Bedrock gateway)', false, 'BIFROST_OPENAI_BASE_URL'),
+      cat('ollama', 'Ollama (local)', true, 'OLLAMA_BASE_URL'),
+    ]
+    return { live: false, available: ['anthropic', 'ollama'], catalog }
+  }
 }
 
 /** Redact a create-input into a list-view kind (drops any inline plaintext). */
@@ -488,6 +526,11 @@ class HttpBifrostApi implements BifrostApi {
     })
     if (!res.ok) throw new Error(`${res.status}: ${(await res.text()) || 'toggle failed'}`)
     return (await res.json()) as Settings
+  }
+  async getProviders(): Promise<ProvidersView> {
+    const res = await fetch(`${this.base}/providers`, { headers: this.headers() })
+    if (!res.ok) throw new Error(`providers request failed: ${res.status}`)
+    return (await res.json()) as ProvidersView
   }
 }
 

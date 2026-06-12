@@ -121,6 +121,7 @@ pub fn spawn_convert_job(
     pipelines: Vec<(String, Option<String>)>,
     tenant: String,
     air_gap: bool,
+    llm_conns: Arc<Vec<crate::ResolvedLlm>>,
 ) -> Arc<JobState> {
     let (tx, _) = broadcast::channel(EVENT_CAP);
     let job = Arc::new(JobState {
@@ -152,10 +153,18 @@ pub fn spawn_convert_job(
             let store = store.clone();
             let job = run.clone();
             let tenant = tenant.clone();
+            let llm_conns = llm_conns.clone();
             set.spawn(async move {
                 let _permit = permit;
-                let item =
-                    convert_one(store.as_ref(), &pid, project.as_deref(), &tenant, air_gap).await;
+                let item = convert_one(
+                    store.as_ref(),
+                    &pid,
+                    project.as_deref(),
+                    &tenant,
+                    air_gap,
+                    &llm_conns,
+                )
+                .await;
                 job.emit_item(item).await;
             });
         }
@@ -173,6 +182,7 @@ async fn convert_one(
     project: Option<&str>,
     tenant: &str,
     air_gap: bool,
+    llm_conns: &[crate::ResolvedLlm],
 ) -> JobItem {
     let proposal_id = proposal_id_for(pipeline_id);
     if matches!(store.get(&proposal_id).await, Ok(Some(_))) {
@@ -184,7 +194,7 @@ async fn convert_one(
         };
     }
     let policy = store.get_routing_policy(tenant).await.ok().flatten();
-    match crate::run_conversion(pipeline_id, project, policy, air_gap).await {
+    match crate::run_conversion(pipeline_id, project, policy, air_gap, llm_conns).await {
         Ok(outcome) => {
             let rec = StoredProposal {
                 proposal: outcome.proposal,
@@ -239,7 +249,14 @@ mod tests {
             ("web-portal-ci".to_string(), None),
             ("payments-api-ci".to_string(), None),
         ];
-        let job = spawn_convert_job("job-1".into(), store.clone(), ids, "default".into(), false);
+        let job = spawn_convert_job(
+            "job-1".into(),
+            store.clone(),
+            ids,
+            "default".into(),
+            false,
+            std::sync::Arc::new(vec![]),
+        );
         wait_finished(&job).await;
 
         let snap = job.snapshot().await;
@@ -261,11 +278,19 @@ mod tests {
             one.clone(),
             "default".into(),
             false,
+            std::sync::Arc::new(vec![]),
         );
         wait_finished(&job).await;
 
         // Second run over the same pipeline skips it (resumability).
-        let job2 = spawn_convert_job("job-2".into(), store.clone(), one, "default".into(), false);
+        let job2 = spawn_convert_job(
+            "job-2".into(),
+            store.clone(),
+            one,
+            "default".into(),
+            false,
+            std::sync::Arc::new(vec![]),
+        );
         wait_finished(&job2).await;
         assert_eq!(job2.snapshot().await["items"][0]["skipped"], true);
     }
