@@ -1,7 +1,7 @@
 ---
 title: Bifrost in your editor (MCP)
 layout: default
-nav_order: 7
+nav_order: 8
 permalink: /mcp
 description: "Use the Bifrost MCP server from VS Code, Cursor or any MCP client — query the migration portfolio and (next) convert a pipeline to a GitHub Actions workflow without leaving the editor."
 ---

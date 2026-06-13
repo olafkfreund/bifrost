@@ -1,7 +1,7 @@
 ---
 title: Enterprise golden path
 layout: default
-nav_order: 6
+nav_order: 7
 permalink: /enterprise
 description: "Deploy, gate, secure and operate Bifrost in an enterprise — the golden path from a pulled, signed image to SSO, RBAC, multi-tenancy and air-gap, with every control opt-in."
 ---
