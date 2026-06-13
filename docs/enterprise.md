@@ -70,7 +70,7 @@ the posture requires.
 |---------|------|---------|-----------------|
 | Datastore | `BIFROST_DB` | `sqlite:/data/bifrost.db` | `postgres://…` switches to multi-tenant server mode |
 | Air-gap | `BIFROST_AIR_GAP` | `1` (compose) | Forces every model call local; disables frontier providers. `BIFROST_AIR_GAP_LOCK` makes it non-toggleable at runtime |
-| Authentication | `BIFROST_AUTH` | unset (open) | `entra` requires a valid Entra ID bearer on `/api/*` |
+| Authentication | `BIFROST_AUTH` | unset (open) | `entra` / `oidc` / `github` require a valid bearer on `/api/*` |
 | Live conversion | `BIFROST_CONVERT_LIVE` | unset (mock) | Uses the real Importer Docker + configured LLM, not the mock |
 | Live commit | `BIFROST_COMMIT_LIVE` | unset (mock PR) | Opens a real GitHub pull request on commit |
 | Live validation | `BIFROST_VALIDATE_LIVE` | unset (mock) | Triggers a real sandbox `workflow_dispatch` run |
@@ -88,13 +88,22 @@ Three reference postures:
 - **Full production** — additionally `BIFROST_COMMIT_LIVE=1` + `BIFROST_VALIDATE_LIVE=1`, with
   RBAC and tenancy enforced (below).
 
-## Step 4 — Single sign-on (Entra ID) and RBAC
+## Step 4 — Single sign-on and RBAC
 
 Authentication is **opt-in**. Unset, the API runs open and every request is the local admin
-(logged loudly at startup). With `BIFROST_AUTH=entra`, the API validates a Microsoft Entra ID
-(Azure AD) bearer token on every `/api/*` request (except `/api/health`): signature against
-Entra's published JWKS, plus issuer / audience / expiry, then maps the token's role claims to a
-Bifrost identity.
+(logged loudly at startup). Set `BIFROST_AUTH` to pick a provider; the API then validates the
+bearer token on every `/api/*` request (except `/api/health`) and maps it to a Bifrost identity.
+All providers plug into the same `Authenticator` seam, so the RBAC and tenancy below are
+provider-agnostic. If a configured provider can't be initialised, the API logs an error and
+falls back to open mode rather than failing closed.
+
+| `BIFROST_AUTH` | Provider | How the bearer is validated |
+|----------------|----------|-----------------------------|
+| `entra` | Microsoft Entra ID (Azure AD) | OIDC JWT: signature against Entra's JWKS + issuer / audience / expiry |
+| `oidc` | Any OIDC issuer (Keycloak, Auth0, Okta, Ping, …) | OIDC JWT: signature against the issuer's JWKS + issuer / audience / expiry |
+| `github` | Sign in with GitHub | GitHub user API call (`GET /user`) — GitHub OAuth issues opaque tokens, not OIDC ID tokens |
+
+### Entra ID
 
 ```bash
 BIFROST_AUTH=entra
@@ -106,6 +115,39 @@ BIFROST_ENTRA_AUDIENCE=<api-app-client-id>
 
 The portal signs the user in with the standard OIDC authorization-code + PKCE flow (MSAL) and
 sends the resulting bearer to the API. JWKS is cached and refreshed hourly (Entra rotates keys).
+
+### Generic OIDC (Keycloak, Auth0, Okta, …)
+
+For any standards-compliant OIDC issuer, give the issuer, JWKS URI and audience explicitly. This
+makes **Keycloak** work directly — including Keycloak **brokering** to Entra (Keycloak federates
+to Entra upstream and issues its own tokens to Bifrost, so Bifrost only ever trusts Keycloak).
+
+```bash
+BIFROST_AUTH=oidc
+BIFROST_OIDC_ISSUER=https://keycloak.example.com/realms/bifrost
+BIFROST_OIDC_JWKS_URI=https://keycloak.example.com/realms/bifrost/protocol/openid-connect/certs
+BIFROST_OIDC_AUDIENCE=bifrost-api
+# Role claims are read from `roles` and/or `groups`. Tenant defaults to the `tid`
+# claim; point it at your provider's claim if different (Keycloak realm, org id, …):
+# BIFROST_OIDC_TENANT_CLAIM=org_id
+```
+
+JWKS is cached and refreshed hourly, exactly as for Entra. Role claims map through the same table
+below; map your realm/client roles (or groups) to `viewer` / `reviewer` / `admin` in the IdP.
+
+### Sign in with GitHub
+
+GitHub's OAuth web flow issues opaque access tokens (not verifiable OIDC ID tokens), so Bifrost
+validates the bearer by calling the GitHub user API with it. Everyone defaults to **Viewer**;
+list the GitHub logins that should be **Admin** explicitly.
+
+```bash
+BIFROST_AUTH=github
+# Logins granted Admin (comma-separated, case-insensitive); everyone else is Viewer:
+BIFROST_GITHUB_ADMIN_LOGINS=octocat,ada-lovelace
+# For GitHub Enterprise Server, point at your instance's API base:
+# GITHUB_API_BASE=https://github.example.com/api/v3
+```
 
 ### Roles
 
@@ -131,11 +173,12 @@ repositories (contents + pull-requests), not a personal token. Service connectio
 to GitHub via **OIDC** rather than copying secrets — Bifrost records secret *names*, never values.
 
 {: .note }
-> **Roadmap — other identity providers.** Today the built-in SSO provider is Entra ID. A
-> **generic-OIDC** authenticator (so **Keycloak** works directly, including Keycloak brokering
-> to Entra) and a **GitHub OAuth login** are planned
-> ([#281](https://github.com/olafkfreund/bifrost/issues/281)). The `Authenticator` trait is the
-> seam they plug into; the RBAC + tenancy above are provider-agnostic and apply unchanged.
+> **Identity providers.** Bifrost ships three built-in SSO providers behind one `Authenticator`
+> seam: **Entra ID** (`BIFROST_AUTH=entra`), a **generic-OIDC** authenticator
+> (`BIFROST_AUTH=oidc`, so **Keycloak** works directly — including Keycloak brokering to Entra),
+> and a **GitHub login** (`BIFROST_AUTH=github`)
+> ([#286](https://github.com/olafkfreund/bifrost/issues/286)). The RBAC + tenancy above are
+> provider-agnostic and apply unchanged across all three.
 
 ## Step 5 — Air-gap
 
@@ -151,8 +194,8 @@ zero egress.
 
 - [ ] Pulled images **verified** with `cosign verify` (provenance + SBOM attestation).
 - [ ] `BIFROST_SIGNING_KEY` set to a real secret (not the dev key) and stored in your secrets manager.
-- [ ] `BIFROST_AUTH=entra` with tenant + audience configured; portal wired to your IdP.
-- [ ] Roles assigned in Entra (Viewer / Reviewer / Admin) — least privilege per team.
+- [ ] `BIFROST_AUTH` set to your provider (`entra` / `oidc` / `github`) and configured; portal wired to your IdP.
+- [ ] Roles assigned in the IdP (Viewer / Reviewer / Admin) — least privilege per team.
 - [ ] Postgres for server mode; per-tenant isolation verified.
 - [ ] GitHub App installed, scoped to the target repos only; service connections federated via OIDC.
 - [ ] Live flags (`CONVERT` / `COMMIT` / `VALIDATE` / `MCP_COMMIT`) enabled **only** where intended.
