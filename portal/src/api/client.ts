@@ -63,6 +63,8 @@ export interface BifrostApi {
   getGeiCoordination(): Promise<ProjectCoordination[]>
   /** Dry-run plan of the GitHub Projects program board (#265). */
   getProgramBoardPlan(): Promise<ProgramBoardPlan>
+  /** The management KPI + roadmap snapshot as Markdown (#269) — pairs with the PDF report. */
+  getProgramBoardExport(): Promise<string>
   /** The `.github/copilot-instructions.md` for migrated repos (#243). */
   getAgentInstructions(): Promise<string>
   /** Source (Azure DevOps) assessment statistics (#240). */
@@ -525,6 +527,57 @@ class MockBifrostApi implements BifrostApi {
       ],
     }
   }
+  async getProgramBoardExport(): Promise<string> {
+    // Mirrors `bifrost_core::program_board_export_markdown` over the demo data.
+    const plan = await this.getProgramBoardPlan()
+    const k = plan.kpis
+    const s = mockPortfolio.summary
+    const waveName: Record<number, string> = { 1: 'Pilot', 2: 'Early majority', 3: 'Late majority' }
+    const humanize = (m: number) => {
+      if (m === 0) return '0 min'
+      if (m < 60) return `${m} min`
+      const h = m / 60
+      if (h < 8) return `${h.toFixed(1)} h`
+      return `${(h / 8).toFixed(1)} working days (${h.toFixed(0)} h)`
+    }
+    const migratedStatus = (st: string) => st === 'Committed' || st === 'Validated'
+    const inProgressStatus = (st: string) => st === 'Draft' || st === 'In review' || st === 'Changes requested'
+    const waves = [1, 2, 3].map((w) => {
+      const members = plan.issues.filter((i) => i.wave === w)
+      return {
+        wave: w,
+        name: waveName[w],
+        count: members.length,
+        forecastMinutes: members.reduce((a, i) => a + i.forecastMinutes, 0),
+        migrated: members.filter((i) => migratedStatus(i.status)).length,
+        inProgress: members.filter((i) => inProgressStatus(i.status)).length,
+        notStarted: members.filter((i) => i.status === 'Not started').length,
+      }
+    })
+    let out = '# Migration Program KPI & Roadmap Snapshot\n\n'
+    out += `Organization: **${s.org || '(portfolio)'}**  \nProject: **${plan.projectTitle}**  \nGenerated: ${s.generatedAt}  \nImporter: ${s.importerVersion}\n\n`
+    out +=
+      '> This is a **management snapshot** for the program/steering board — a KPI roll-up and a wave roadmap. It pairs with the pre-migration status report. KPIs are computed deterministically by Bifrost (GitHub Projects Insights is UI-only); nothing has been created on GitHub, and every change Bifrost makes is delivered as a **reviewable pull request**, never a live edit.\n\n'
+    out += '## KPIs\n\n| Metric | Value |\n|---|---|\n'
+    out += `| Pipelines (total) | ${k.total} |\n`
+    out += `| Migrated | ${k.migrated} |\n`
+    out += `| Validated | ${k.validated} |\n`
+    out += `| In progress | ${k.inProgress} |\n`
+    out += `| Not started | ${k.notStarted} |\n`
+    out += `| Percent done | ${k.percentDone}% |\n`
+    out += `| Forecast runner-minutes/month | ${k.forecastMinutes} (${humanize(k.forecastMinutes)}) |\n\n`
+    out += '## Roadmap by wave\n\n'
+    out +=
+      'Pipelines are sequenced into waves by difficulty — pilot the easy ones, the hard tail (classic/designer and high-risk) last.\n\n'
+    out += '| Wave | Cohort | Pipelines | Forecast | Migrated | In progress | Not started |\n|---|---|---|---|---|---|---|\n'
+    for (const w of waves) {
+      out += `| ${w.wave} | ${w.name} | ${w.count} | ${humanize(w.forecastMinutes)} | ${w.migrated} | ${w.inProgress} | ${w.notStarted} |\n`
+    }
+    out += '\n## Notes\n\n'
+    for (const n of plan.notes) out += `- ${n}\n`
+    out += '\n'
+    return out
+  }
   async getSourceStats(): Promise<SourceStats> {
     const t = mockPortfolio.summary.totals
     const ps = mockPortfolio.pipelines
@@ -894,6 +947,12 @@ class HttpBifrostApi implements BifrostApi {
     const res = await fetch(`${this.base}/program-board/plan`, { headers: this.headers() })
     if (!res.ok) throw new Error(`program-board plan request failed: ${res.status}`)
     return (await res.json()) as ProgramBoardPlan
+  }
+  /** The management KPI + roadmap snapshot as Markdown (#269) — pairs with the PDF report. */
+  async getProgramBoardExport(): Promise<string> {
+    const res = await fetch(`${this.base}/program-board/export.md`, { headers: this.headers() })
+    if (!res.ok) throw new Error(`program-board export request failed: ${res.status}`)
+    return await res.text()
   }
   async getAgentInstructions(): Promise<string> {
     const res = await fetch(`${this.base}/copilot-instructions`, { headers: this.headers() })

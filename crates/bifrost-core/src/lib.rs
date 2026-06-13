@@ -59,7 +59,8 @@ pub use parity::{
 };
 pub use program::{program, WavePlan};
 pub use program_board::{
-    program_board_plan, BoardField, BoardKpis, PlannedIssue, ProgramBoardPlan,
+    program_board_export, program_board_export_markdown, program_board_plan, BoardField, BoardKpis,
+    PlannedIssue, ProgramBoardExport, ProgramBoardPlan, WaveRollup,
 };
 pub use proposal::{is_legal_transition, Attestation, Proposal, ProposalError};
 pub use readiness::{readiness, ReadinessItem, ReadinessStatus};

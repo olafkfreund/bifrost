@@ -218,6 +218,187 @@ pub fn program_board_plan(portfolio: &Portfolio) -> ProgramBoardPlan {
     }
 }
 
+/// The human-readable wave name (Pilot / Early majority / Late majority).
+fn wave_name(wave: u8) -> &'static str {
+    match wave {
+        1 => "Pilot",
+        2 => "Early majority",
+        _ => "Late majority",
+    }
+}
+
+/// Humanize a runner-minutes total into a short, management-friendly string
+/// (minutes → hours → days, ~8h working days). Deterministic, no rounding drift.
+fn humanize_minutes(minutes: u32) -> String {
+    if minutes == 0 {
+        return "0 min".to_string();
+    }
+    if minutes < 60 {
+        return format!("{minutes} min");
+    }
+    let hours = minutes as f64 / 60.0;
+    if hours < 8.0 {
+        return format!("{hours:.1} h");
+    }
+    let days = hours / 8.0;
+    format!("{days:.1} working days ({hours:.0} h)")
+}
+
+/// One wave's roll-up for the management roadmap: count, forecast, and a status
+/// breakdown so the timeline reads as a management snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WaveRollup {
+    pub wave: u8,
+    /// Pilot / Early majority / Late majority.
+    pub name: String,
+    pub count: u32,
+    pub forecast_minutes: u32,
+    pub migrated: u32,
+    pub in_progress: u32,
+    pub not_started: u32,
+}
+
+/// The management KPI + roadmap snapshot (#269) — a deterministic, read-only
+/// export built **on top of** [`program_board_plan`]. It pairs with the
+/// pre-migration PDF status report: same provenance + tone, but a management-ready
+/// KPI roll-up and a roadmap-by-wave timeline rather than a per-pipeline assessment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgramBoardExport {
+    pub org: String,
+    pub generated_at: String,
+    pub importer_version: String,
+    pub project_title: String,
+    pub kpis: BoardKpis,
+    /// Roadmap by wave, ordered Pilot → Early → Late.
+    pub waves: Vec<WaveRollup>,
+    pub notes: Vec<String>,
+}
+
+/// Build the deterministic management KPI + roadmap snapshot for a portfolio.
+/// Built on top of [`program_board_plan`] — it never recomputes KPIs differently.
+/// No I/O, no LLM.
+pub fn program_board_export(portfolio: &Portfolio) -> ProgramBoardExport {
+    let plan = program_board_plan(portfolio);
+
+    // Roll the planned issues up by wave (1=Pilot, 2=Early, 3=Late). "Migrated"
+    // and "in progress" mirror the same status buckets the KPI roll-up uses, so
+    // the per-wave breakdown reconciles with the headline KPIs.
+    let migrated_status = |s: &str| matches!(s, "Committed" | "Validated");
+    let in_progress_status = |s: &str| matches!(s, "Draft" | "In review" | "Changes requested");
+
+    let waves: Vec<WaveRollup> = [1u8, 2, 3]
+        .iter()
+        .map(|&wave| {
+            let members: Vec<&PlannedIssue> =
+                plan.issues.iter().filter(|i| i.wave == wave).collect();
+            WaveRollup {
+                wave,
+                name: wave_name(wave).to_string(),
+                count: members.len() as u32,
+                forecast_minutes: members.iter().map(|i| i.forecast_minutes).sum(),
+                migrated: members
+                    .iter()
+                    .filter(|i| migrated_status(&i.status))
+                    .count() as u32,
+                in_progress: members
+                    .iter()
+                    .filter(|i| in_progress_status(&i.status))
+                    .count() as u32,
+                not_started: members.iter().filter(|i| i.status == "Not started").count() as u32,
+            }
+        })
+        .collect();
+
+    ProgramBoardExport {
+        org: portfolio.summary.org.clone(),
+        generated_at: portfolio.summary.generated_at.clone(),
+        importer_version: portfolio.summary.importer_version.clone(),
+        project_title: plan.project_title,
+        kpis: plan.kpis,
+        waves,
+        notes: plan.notes,
+    }
+}
+
+/// Render the management KPI + roadmap snapshot as Markdown — a management-ready
+/// sibling of the pre-migration status report (same provenance block + tone).
+/// Deterministic, read-only.
+pub fn program_board_export_markdown(portfolio: &Portfolio) -> String {
+    let e = program_board_export(portfolio);
+    let k = &e.kpis;
+    let mut out = String::new();
+
+    out.push_str("# Migration Program KPI & Roadmap Snapshot\n\n");
+    out.push_str(&format!(
+        "Organization: **{org}**  \nProject: **{project}**  \nGenerated: {at}  \nImporter: {imp}\n\n",
+        org = if e.org.is_empty() {
+            "(portfolio)"
+        } else {
+            &e.org
+        },
+        project = e.project_title,
+        at = e.generated_at,
+        imp = e.importer_version,
+    ));
+    out.push_str(
+        "> This is a **management snapshot** for the program/steering board — a KPI roll-up and a \
+         wave roadmap. It pairs with the pre-migration status report. KPIs are computed \
+         deterministically by Bifrost (GitHub Projects Insights is UI-only); nothing has been \
+         created on GitHub, and every change Bifrost makes is delivered as a **reviewable pull \
+         request**, never a live edit.\n\n",
+    );
+
+    // --- KPI roll-up ---
+    out.push_str("## KPIs\n\n");
+    out.push_str("| Metric | Value |\n|---|---|\n");
+    out.push_str(&format!("| Pipelines (total) | {} |\n", k.total));
+    out.push_str(&format!("| Migrated | {} |\n", k.migrated));
+    out.push_str(&format!("| Validated | {} |\n", k.validated));
+    out.push_str(&format!("| In progress | {} |\n", k.in_progress));
+    out.push_str(&format!("| Not started | {} |\n", k.not_started));
+    out.push_str(&format!("| Percent done | {}% |\n", k.percent_done));
+    out.push_str(&format!(
+        "| Forecast runner-minutes/month | {} ({}) |\n\n",
+        k.forecast_minutes,
+        humanize_minutes(k.forecast_minutes),
+    ));
+
+    // --- Roadmap by wave ---
+    out.push_str("## Roadmap by wave\n\n");
+    out.push_str(
+        "Pipelines are sequenced into waves by difficulty — pilot the easy ones, the hard tail \
+         (classic/designer and high-risk) last.\n\n",
+    );
+    out.push_str(
+        "| Wave | Cohort | Pipelines | Forecast | Migrated | In progress | Not started |\n\
+         |---|---|---|---|---|---|---|\n",
+    );
+    for w in &e.waves {
+        out.push_str(&format!(
+            "| {} | {} | {} | {} | {} | {} | {} |\n",
+            w.wave,
+            w.name,
+            w.count,
+            humanize_minutes(w.forecast_minutes),
+            w.migrated,
+            w.in_progress,
+            w.not_started,
+        ));
+    }
+    out.push('\n');
+
+    // --- Notes (mirror the plan's honest guardrails) ---
+    out.push_str("## Notes\n\n");
+    for n in &e.notes {
+        out.push_str(&format!("- {n}\n"));
+    }
+    out.push('\n');
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,5 +494,83 @@ mod tests {
         let plan = program_board_plan(&p);
         assert_eq!(plan.issues[0].wave, 1);
         assert_eq!(plan.issues[1].wave, 3);
+    }
+
+    #[test]
+    fn export_kpis_match_the_plan_and_waves_group_correctly() {
+        use Classification::*;
+        use ProposalStatus::*;
+        use RiskBand::*;
+        let p = portfolio(
+            "Contoso 0455",
+            vec![
+                pipe("A", Yaml, Green, Committed),   // pilot (1), migrated
+                pipe("A", Classic, Red, NotStarted), // late (3), not started
+                pipe("B", Yaml, Amber, Validated),   // early (2), migrated+validated
+                pipe("B", Yaml, Green, InReview),    // pilot (1), in progress
+            ],
+        );
+        let plan = program_board_plan(&p);
+        let export = program_board_export(&p);
+
+        // KPIs are taken verbatim from the plan — never recomputed differently.
+        assert_eq!(export.kpis, plan.kpis);
+        assert_eq!(export.org, "Contoso 0455");
+        assert_eq!(export.project_title, plan.project_title);
+
+        // Three waves, ordered Pilot → Early → Late.
+        assert_eq!(export.waves.len(), 3);
+        assert_eq!(export.waves[0].wave, 1);
+        assert_eq!(export.waves[0].name, "Pilot");
+        assert_eq!(export.waves[2].name, "Late majority");
+
+        // Pilot wave: the Green/Committed + the Green/InReview pipeline.
+        assert_eq!(export.waves[0].count, 2);
+        assert_eq!(export.waves[0].migrated, 1);
+        assert_eq!(export.waves[0].in_progress, 1);
+        // Early wave: the Amber/Validated pipeline.
+        assert_eq!(export.waves[1].count, 1);
+        assert_eq!(export.waves[1].migrated, 1);
+        // Late wave: the Classic/Red/NotStarted pipeline.
+        assert_eq!(export.waves[2].count, 1);
+        assert_eq!(export.waves[2].not_started, 1);
+
+        // Per-wave counts reconcile with the total.
+        let summed: u32 = export.waves.iter().map(|w| w.count).sum();
+        assert_eq!(summed, export.kpis.total);
+    }
+
+    #[test]
+    fn export_markdown_has_management_sections() {
+        use Classification::*;
+        use ProposalStatus::*;
+        use RiskBand::*;
+        let p = portfolio(
+            "Contoso 0455",
+            vec![
+                pipe("A", Yaml, Green, Committed),
+                pipe("A", Classic, Red, NotStarted),
+            ],
+        );
+        let md = program_board_export_markdown(&p);
+        assert!(md.contains("# Migration Program KPI & Roadmap Snapshot"));
+        assert!(md.contains("Organization: **Contoso 0455**"));
+        assert!(md.contains("## KPIs"));
+        assert!(md.contains("Percent done"));
+        assert!(md.contains("## Roadmap by wave"));
+        assert!(md.contains("Pilot"));
+        assert!(md.contains("Late majority"));
+        assert!(md.contains("## Notes"));
+        // Honest guardrail mirrored from plan.notes.
+        assert!(md.contains("nothing is created on GitHub") || md.contains("dry-run plan"));
+    }
+
+    #[test]
+    fn humanize_minutes_steps_through_units() {
+        assert_eq!(humanize_minutes(0), "0 min");
+        assert_eq!(humanize_minutes(45), "45 min");
+        assert_eq!(humanize_minutes(90), "1.5 h");
+        // 16 hours = 2 working days.
+        assert!(humanize_minutes(960).contains("working days"));
     }
 }

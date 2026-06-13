@@ -66,12 +66,35 @@ export function Board({ api }: { api: BifrostApi }) {
             sub-issues, KPIs for management. This is a dry-run plan; nothing is created until you approve provisioning.
           </p>
         </div>
-        <div
-          title="Provisioning the org Project + dedicated repo is a separate, approval-gated step (Phase 2)."
-          className="inline-flex items-center gap-2 rounded-lg border border-ink-800 bg-ink-900/40 px-3 py-1.5 text-xs text-ink-300"
-        >
-          <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-risk-amber)]" />
-          Dry-run · not yet provisioned
+        <div className="flex items-center gap-2">
+          {/* Management KPI + roadmap snapshot (#269) — pairs with the PDF status report. */}
+          <button
+            onClick={() => {
+              api
+                .getProgramBoardExport()
+                .then((md) => {
+                  const blob = new Blob([md], { type: 'text/markdown' })
+                  const url = URL.createObjectURL(blob)
+                  const a = document.createElement('a')
+                  a.href = url
+                  a.download = 'migration-program-kpi-roadmap.md'
+                  a.click()
+                  URL.revokeObjectURL(url)
+                })
+                .catch((e) => setError(String(e)))
+            }}
+            title="Download the management KPI + roadmap snapshot (Markdown) — a sibling of the PDF status report"
+            className="rounded-lg border border-ink-800 px-3 py-1.5 text-xs text-ink-200 transition hover:bg-ink-850 hover:text-ink-100"
+          >
+            Export for management
+          </button>
+          <div
+            title="Provisioning the org Project + dedicated repo is a separate, approval-gated step (Phase 2)."
+            className="inline-flex items-center gap-2 rounded-lg border border-ink-800 bg-ink-900/40 px-3 py-1.5 text-xs text-ink-300"
+          >
+            <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-risk-amber)]" />
+            Dry-run · not yet provisioned
+          </div>
         </div>
       </div>
 

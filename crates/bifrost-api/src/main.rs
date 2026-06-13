@@ -1328,6 +1328,34 @@ async fn program_board_provision_handler(
     })))
 }
 
+/// `GET /api/program-board/export.md` (#269) — the management KPI + roadmap
+/// snapshot as Markdown. A read/export of already-computed data (Viewer), built
+/// deterministically on top of the program-board plan; it pairs with the PDF
+/// status report. No GitHub writes, no LLM.
+async fn program_board_export_md_handler(State(state): State<Shared>) -> Response {
+    let portfolio = state.portfolio.read().await.clone();
+    let md = bifrost_core::program_board_export_markdown(&portfolio);
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/markdown; charset=utf-8",
+        )],
+        md,
+    )
+        .into_response()
+}
+
+/// `GET /api/program-board/export.json` (#269) — the same management snapshot as
+/// structured JSON (KPIs + per-wave roadmap + notes + the Markdown body), for the
+/// portal and automation. Viewer; deterministic.
+async fn program_board_export_json_handler(State(state): State<Shared>) -> Json<Value> {
+    let portfolio = state.portfolio.read().await.clone();
+    Json(json!({
+        "export": bifrost_core::program_board_export(&portfolio),
+        "markdown": bifrost_core::program_board_export_markdown(&portfolio),
+    }))
+}
+
 async fn completeness_handler(
     State(state): State<Shared>,
 ) -> Json<Vec<bifrost_core::CompletenessRow>> {
@@ -2205,6 +2233,14 @@ fn app(state: Shared) -> Router {
             "/api/program-board/provision",
             post(program_board_provision_handler),
         )
+        .route(
+            "/api/program-board/export.md",
+            get(program_board_export_md_handler),
+        )
+        .route(
+            "/api/program-board/export.json",
+            get(program_board_export_json_handler),
+        )
         .route("/api/completeness", get(completeness_handler))
         .route("/api/chat", post(chat_handler))
         .route(
@@ -2845,6 +2881,66 @@ mod tests {
             required_role(&Method::POST, "/api/program-board/provision"),
             Role::Admin
         );
+        // The management KPI/roadmap export is a read of already-computed data (#269).
+        assert_eq!(
+            required_role(&Method::GET, "/api/program-board/export.md"),
+            Role::Viewer
+        );
+        assert_eq!(
+            required_role(&Method::GET, "/api/program-board/export.json"),
+            Role::Viewer
+        );
+    }
+
+    #[tokio::test]
+    async fn program_board_export_returns_management_snapshot_md_and_json() {
+        let state = test_state();
+
+        // Markdown export: a management-ready KPI + roadmap snapshot.
+        let md_res = program_board_export_md_handler(State(state.clone()))
+            .await
+            .into_response();
+        assert_eq!(md_res.status(), StatusCode::OK);
+        let ct = md_res
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(ct.starts_with("text/markdown"));
+        let bytes = axum::body::to_bytes(md_res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let md = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(md.contains("# Migration Program KPI & Roadmap Snapshot"));
+        assert!(md.contains("## KPIs"));
+        assert!(md.contains("## Roadmap by wave"));
+
+        // JSON export: the structured snapshot + the Markdown body. KPIs reconcile
+        // with the deterministic plan (never recomputed differently).
+        let json = program_board_export_json_handler(State(state.clone()))
+            .await
+            .0;
+        let plan = bifrost_core::program_board_plan(&sample::portfolio());
+        assert_eq!(
+            json["export"]["kpis"]["total"].as_u64().unwrap() as u32,
+            plan.kpis.total
+        );
+        assert_eq!(
+            json["export"]["kpis"]["percentDone"].as_u64().unwrap() as u32,
+            plan.kpis.percent_done
+        );
+        let waves = json["export"]["waves"].as_array().unwrap();
+        assert_eq!(waves.len(), 3);
+        let summed: u32 = waves
+            .iter()
+            .map(|w| w["count"].as_u64().unwrap() as u32)
+            .sum();
+        assert_eq!(summed, plan.kpis.total);
+        assert!(json["markdown"]
+            .as_str()
+            .unwrap()
+            .contains("## Roadmap by wave"));
     }
 
     #[tokio::test]
