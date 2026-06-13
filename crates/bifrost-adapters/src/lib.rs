@@ -38,7 +38,7 @@ pub use bitbucket::BitbucketAdapter;
 pub use board::{
     BoardProvisioner, GitHubBoardProvisioner, MockBoardProvisioner, ProvisionAction,
     ProvisionError, ProvisionOutcome, ProvisionResult, ProvisionTarget, ProvisionedField,
-    ProvisionedIssue,
+    ProvisionedIssue, ProvisionedOption, StatusSyncTarget,
 };
 pub use circleci::CircleCiAdapter;
 pub use convert::{convert_pipeline, ConversionError, ConversionOutcome};

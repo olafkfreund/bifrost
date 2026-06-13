@@ -35,8 +35,8 @@ use bifrost_adapters::{
     BaselineRequest, BaselineSource, BoardProvisioner, CommitRequest, ConversionOutcome,
     GitHubBoardProvisioner, GitHubPublisher, GitHubRunCollector, GitHubSandboxTrigger,
     MockBaselineSource, MockBoardProvisioner, MockImporter, MockPublisher, MockRunCollector,
-    MockSandboxTrigger, ProvisionAction, Publisher, RunCollector, RunQuery, SandboxTrigger,
-    TriggerRequest,
+    MockSandboxTrigger, ProvisionAction, ProvisionResult, Publisher, RunCollector, RunQuery,
+    SandboxTrigger, TriggerRequest,
 };
 use bifrost_core::{
     compare_parity, Attestation, AuditLog, AuditPack, Classification, ConfigAction, ConfigEvent,
@@ -82,6 +82,11 @@ struct AppState {
     /// the attestation trail. Handlers only ever extend it — never mutate or
     /// remove entries — so it stays immutable like the per-proposal audit log.
     provisioning_log: RwLock<Vec<ProvisionAction>>,
+    /// The most recent program-board provisioning result (#267): carries the issue
+    /// item ids + Status field/option ids needed to sync a lifecycle transition
+    /// onto the board. `None` until a board has been provisioned this session —
+    /// when absent, a status sync is a clean no-op (nothing to sync to).
+    last_board: RwLock<Option<ProvisionResult>>,
 }
 
 impl AppState {
@@ -111,6 +116,62 @@ fn internal(e: anyhow::Error) -> (StatusCode, String) {
 /// The proposal id the conversion loop assigns for a pipeline (see `run_conversion`).
 fn proposal_id_for(pipeline_id: &str) -> String {
     format!("prop-{pipeline_id}")
+}
+
+/// The program-board issue title for a pipeline (#267). Must match the title the
+/// board plan assigns in [`bifrost_core::program_board`] — `"Migrate {project} · {name}"`
+/// — so a lifecycle transition syncs onto the right issue.
+fn board_issue_title_for(pipeline: &bifrost_core::Pipeline) -> String {
+    format!("Migrate {} · {}", pipeline.project, pipeline.name)
+}
+
+/// Best-effort sync of a proposal's lifecycle state onto its program-board issue's
+/// Status field (#267). **Non-fatal**: the lifecycle transition + its audit event
+/// always stand; a board-sync failure is logged and swallowed. When no board has
+/// been provisioned this session (or the issue/field/option can't be resolved),
+/// this is a clean no-op. Any sync action performed is appended to the immutable
+/// provisioning log. Routed only through the gated mock-by-default selector.
+async fn sync_status_to_board(state: &Shared, proposal_pipeline_id: &str, to: ProposalStatus) {
+    // Resolve the board context from the last provisioning run; nothing to sync to
+    // if no board exists yet.
+    let target = {
+        let guard = state.last_board.read().await;
+        let Some(board) = guard.as_ref() else {
+            return;
+        };
+        // Map the proposal's pipeline to its board issue title.
+        let title = {
+            let portfolio = state.portfolio.read().await;
+            portfolio
+                .pipelines
+                .iter()
+                .find(|p| p.id == proposal_pipeline_id)
+                .map(board_issue_title_for)
+        };
+        let Some(title) = title else {
+            return;
+        };
+        let status_name = bifrost_core::program_board::status_label(to);
+        board.status_sync_target(&title, status_name)
+    };
+    let Some(target) = target else {
+        return; // no matching issue / Status field / option — clean no-op.
+    };
+
+    let status_name = bifrost_core::program_board::status_label(to);
+    match select_board_provisioner()
+        .await
+        .sync_issue_status(&target, status_name)
+        .await
+    {
+        Ok(action) => {
+            state.provisioning_log.write().await.push(action);
+        }
+        Err(e) => {
+            // Non-fatal: the transition already succeeded and is audit-logged.
+            tracing::warn!("program-board status sync failed (transition stands): {e}");
+        }
+    }
 }
 
 /// Serialize a stored proposal for the wire: `{ proposal, runbook, audit }`.
@@ -413,6 +474,13 @@ async fn transition(
         .map_err(|e| (StatusCode::CONFLICT, e.to_string()))?;
     state.metrics.inc_transition(&to_label);
     state.store.put(&rec).await.map_err(internal)?;
+
+    // After the transition is committed + audit-logged, also sync the matching
+    // program-board issue's Status field so the board shows velocity (#267). This
+    // is best-effort and non-fatal — a board-sync failure never fails the
+    // transition; a missing board is a clean no-op.
+    sync_status_to_board(&state, &rec.proposal.pipeline_id, body.to).await;
+
     Ok(Json(record_json(&rec)))
 }
 
@@ -1250,6 +1318,9 @@ async fn program_board_provision_handler(
         let mut log = state.provisioning_log.write().await;
         log.extend(result.actions.iter().cloned());
     }
+    // Remember the result so lifecycle transitions can sync onto the board (#267):
+    // it carries the per-issue item ids + the Status field/option ids.
+    *state.last_board.write().await = Some(result.clone());
 
     Ok(Json(json!({
         "result": result,
@@ -2407,6 +2478,7 @@ async fn main() -> anyhow::Result<()> {
         air_gap: AtomicBool::new(air_gap_default || air_gap_locked),
         air_gap_locked,
         provisioning_log: RwLock::new(Vec::new()),
+        last_board: RwLock::new(None),
     });
 
     let addr = std::env::var("BIFROST_API_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
@@ -2420,6 +2492,7 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bifrost_adapters::ProvisionOutcome;
     use bifrost_core::ProposalStatus;
 
     #[tokio::test]
@@ -2447,6 +2520,7 @@ mod tests {
             air_gap: AtomicBool::new(false),
             air_gap_locked: false,
             provisioning_log: RwLock::new(Vec::new()),
+            last_board: RwLock::new(None),
         })
     }
 
@@ -2901,6 +2975,115 @@ mod tests {
         assert_eq!(logged2, logged * 2);
     }
 
+    /// A lifecycle transition syncs the matching board issue's Status when a board
+    /// has been provisioned: the sync action lands in the (append-only) provisioning
+    /// log, and its status name matches the lifecycle state (#267).
+    #[tokio::test]
+    async fn transition_syncs_board_status_when_a_board_exists() {
+        let state = test_state();
+
+        // Provision the board (offline mock) so last_board is populated.
+        let _ = program_board_provision_handler(State(state.clone()))
+            .await
+            .unwrap();
+        let before = state.provisioning_log.read().await.len();
+
+        // Convert a real portfolio pipeline so its board issue title resolves.
+        // web-portal-ci => "Migrate Storefront · web-portal · CI".
+        let body = convert(State(state.clone()), admin(), Path("web-portal-ci".into()))
+            .await
+            .unwrap()
+            .0;
+        let pid = body["proposal"]["id"].as_str().unwrap().to_string();
+
+        // draft → in_review.
+        let r = transition(
+            State(state.clone()),
+            Path(pid.clone()),
+            Json(TransitionBody {
+                to: ProposalStatus::InReview,
+                actor: Some("rev@x".into()),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(r["proposal"]["status"], "in_review");
+
+        // Exactly one sync action was appended, an Updated to the right status name.
+        let log = state.provisioning_log.read().await;
+        assert_eq!(log.len(), before + 1, "one status-sync action appended");
+        let synced = log.last().unwrap();
+        assert_eq!(synced.outcome, ProvisionOutcome::Updated);
+        assert!(
+            synced.name.contains("In review"),
+            "synced status name matches the lifecycle state: {}",
+            synced.name
+        );
+    }
+
+    /// With no board provisioned, a transition is a clean no-op for the board —
+    /// the transition still succeeds and nothing is appended to the log (#267).
+    #[tokio::test]
+    async fn transition_without_a_board_is_a_clean_no_op() {
+        let state = test_state();
+        assert!(state.last_board.read().await.is_none());
+
+        let body = convert(State(state.clone()), admin(), Path("web-portal-ci".into()))
+            .await
+            .unwrap()
+            .0;
+        let pid = body["proposal"]["id"].as_str().unwrap().to_string();
+
+        let r = transition(
+            State(state.clone()),
+            Path(pid),
+            Json(TransitionBody {
+                to: ProposalStatus::InReview,
+                actor: Some("rev@x".into()),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        // Transition succeeded …
+        assert_eq!(r["proposal"]["status"], "in_review");
+        // … and nothing was synced (no board to sync to).
+        assert!(state.provisioning_log.read().await.is_empty());
+    }
+
+    /// A transition whose pipeline has no matching board issue is also a no-op,
+    /// even though a board exists (the issue title doesn't resolve).
+    #[tokio::test]
+    async fn transition_with_unmatched_pipeline_is_a_no_op() {
+        let state = test_state();
+        let _ = program_board_provision_handler(State(state.clone()))
+            .await
+            .unwrap();
+        let before = state.provisioning_log.read().await.len();
+
+        // "SARC-main" is not in the sample portfolio → no board issue title.
+        let body = convert(State(state.clone()), admin(), Path("SARC-main".into()))
+            .await
+            .unwrap()
+            .0;
+        let pid = body["proposal"]["id"].as_str().unwrap().to_string();
+
+        let _ = transition(
+            State(state.clone()),
+            Path(pid),
+            Json(TransitionBody {
+                to: ProposalStatus::InReview,
+                actor: Some("rev@x".into()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        // No sync appended (the pipeline has no matching board issue).
+        assert_eq!(state.provisioning_log.read().await.len(), before);
+    }
+
     #[test]
     fn proposal_id_from_path_extracts_the_id() {
         assert_eq!(
@@ -2950,6 +3133,7 @@ mod tests {
             air_gap: AtomicBool::new(false),
             air_gap_locked: false,
             provisioning_log: RwLock::new(Vec::new()),
+            last_board: RwLock::new(None),
         })
     }
 
@@ -2967,6 +3151,7 @@ mod tests {
             air_gap: AtomicBool::new(true),
             air_gap_locked: true,
             provisioning_log: RwLock::new(Vec::new()),
+            last_board: RwLock::new(None),
         })
     }
 

@@ -63,6 +63,21 @@ pub struct ProgramBoardPlan {
     pub notes: Vec<String>,
 }
 
+/// The Status single-select option name for a proposal lifecycle state. These are
+/// the exact option names the program-board plan creates on the Project's Status
+/// field, so a synced value (#267) always matches a real option.
+pub fn status_label(status: ProposalStatus) -> &'static str {
+    match status {
+        ProposalStatus::NotStarted => "Not started",
+        ProposalStatus::Draft => "Draft",
+        ProposalStatus::InReview => "In review",
+        ProposalStatus::ChangesRequested => "Changes requested",
+        ProposalStatus::Approved => "Approved",
+        ProposalStatus::Committed => "Committed",
+        ProposalStatus::Validated => "Validated",
+    }
+}
+
 /// The migration checklist each pipeline issue carries (the golden-path steps).
 fn checklist() -> Vec<String> {
     vec![
@@ -151,16 +166,6 @@ pub fn program_board_plan(portfolio: &Portfolio) -> ProgramBoardPlan {
         RiskBand::Amber => "Amber",
         RiskBand::Red => "Red",
     };
-    let status_label = |s: ProposalStatus| match s {
-        ProposalStatus::NotStarted => "Not started",
-        ProposalStatus::Draft => "Draft",
-        ProposalStatus::InReview => "In review",
-        ProposalStatus::ChangesRequested => "Changes requested",
-        ProposalStatus::Approved => "Approved",
-        ProposalStatus::Committed => "Committed",
-        ProposalStatus::Validated => "Validated",
-    };
-
     let issues: Vec<PlannedIssue> = portfolio
         .pipelines
         .iter()

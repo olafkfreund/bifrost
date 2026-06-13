@@ -14,6 +14,7 @@ import { Completeness } from './components/Completeness'
 import { Assessment } from './components/Assessment'
 import { Program } from './components/Program'
 import { Board } from './components/Board'
+import { ProgramBoard } from './components/ProgramBoard'
 import { Readiness } from './components/Readiness'
 import { ChatPopout } from './components/ChatPopout'
 import { ReviewQueue } from './components/ReviewQueue'
@@ -34,6 +35,7 @@ type Page =
   | 'completeness'
   | 'program'
   | 'board'
+  | 'programBoard'
   | 'review'
   | 'connections'
   | 'routing'
@@ -125,6 +127,8 @@ export default function App() {
         <Program api={api} />
       ) : page === 'board' ? (
         <Board api={api} />
+      ) : page === 'programBoard' ? (
+        <ProgramBoard api={api} />
       ) : error ? (
         <div className="flex flex-1 items-center justify-center text-[var(--color-risk-red)]">
           Failed to load portfolio: {error}
