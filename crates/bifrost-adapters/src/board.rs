@@ -37,13 +37,17 @@ pub enum ProvisionTarget {
     Issue,
 }
 
-/// Whether the step created the object or found it already present (idempotency
-/// is visible in the action log and the result).
+/// Whether the step created the object, found it already present, or updated an
+/// existing object's value (idempotency/sync is visible in the action log and the
+/// result).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProvisionOutcome {
     Created,
     Existing,
+    /// A field value on an existing item was set/synced (e.g. a lifecycle status
+    /// sync, #267) — not a create, not a no-op.
+    Updated,
 }
 
 /// One immutable step in the provisioning run — appended to the attestation log.
@@ -69,13 +73,61 @@ pub struct ProvisionedIssue {
     pub outcome: ProvisionOutcome,
 }
 
-/// A provisioned (or found) custom field.
+/// One single-select option on a provisioned field — the option name plus its
+/// node id. Needed to sync a value (#267): `updateProjectV2ItemFieldValue` takes
+/// the option *id*, not its name, so we record the name→id map here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvisionedOption {
+    pub name: String,
+    pub node_id: String,
+}
+
+/// A provisioned (or found) custom field. For single-select fields, `options`
+/// carries each option's name→id mapping so a value can later be synced by name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProvisionedField {
     pub name: String,
     pub node_id: String,
     pub outcome: ProvisionOutcome,
+    /// Single-select option ids (empty for non-select fields).
+    #[serde(default)]
+    pub options: Vec<ProvisionedOption>,
+}
+
+impl ProvisionResult {
+    /// Look up the board context needed to sync a single status field value:
+    /// `(project node id, Status field node id, option node id)` for the issue
+    /// titled `issue_title` and the single-select option named `status_name`.
+    ///
+    /// Returns `None` when there is nothing to sync to — no matching issue, no
+    /// Status field, or no option for that status name — so the caller treats a
+    /// missing board as a clean no-op rather than an error (#267).
+    pub fn status_sync_target(
+        &self,
+        issue_title: &str,
+        status_name: &str,
+    ) -> Option<StatusSyncTarget> {
+        let item = self.issues.iter().find(|i| i.title == issue_title)?;
+        let field = self.fields.iter().find(|f| f.name == "Status")?;
+        let option = field.options.iter().find(|o| o.name == status_name)?;
+        Some(StatusSyncTarget {
+            project_node_id: self.project_node_id.clone(),
+            item_node_id: item.node_id.clone(),
+            field_node_id: field.node_id.clone(),
+            option_node_id: option.node_id.clone(),
+        })
+    }
+}
+
+/// The resolved ids a [`BoardProvisioner::sync_issue_status`] call needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusSyncTarget {
+    pub project_node_id: String,
+    pub item_node_id: String,
+    pub field_node_id: String,
+    pub option_node_id: String,
 }
 
 /// The result of a provisioning run: the node ids/URLs of everything created or
@@ -112,6 +164,18 @@ pub trait BoardProvisioner: Send + Sync {
         plan: &ProgramBoardPlan,
         owner: &str,
     ) -> Result<ProvisionResult, ProvisionError>;
+
+    /// Sync one issue's Status single-select to `status_name` by setting the
+    /// resolved option on its project item (#267). Idempotent from the caller's
+    /// view: it always issues the set (the GraphQL mutation is itself idempotent).
+    /// Returns the [`ProvisionAction`] (outcome [`ProvisionOutcome::Updated`]) so
+    /// the caller can append it to the attestation log. The mock records this
+    /// without any network I/O; the real impl issues `updateProjectV2ItemFieldValue`.
+    async fn sync_issue_status(
+        &self,
+        target: &StatusSyncTarget,
+        status_name: &str,
+    ) -> Result<ProvisionAction, ProvisionError>;
 }
 
 /// Offline provisioner: returns deterministic synthetic node ids/URLs and a full
@@ -212,10 +276,21 @@ impl BoardProvisioner for MockBoardProvisioner {
                     node_id: node_id.clone(),
                     outcome,
                 });
+                // Single-select options get deterministic synthetic ids so a later
+                // status sync can resolve an option by name offline (#267).
+                let options = f
+                    .options
+                    .iter()
+                    .map(|o| ProvisionedOption {
+                        name: o.clone(),
+                        node_id: mock_node_id("OPTION", &format!("{}-{o}", f.name)),
+                    })
+                    .collect();
                 ProvisionedField {
                     name: f.name.clone(),
                     node_id,
                     outcome,
+                    options,
                 }
             })
             .collect();
@@ -249,6 +324,20 @@ impl BoardProvisioner for MockBoardProvisioner {
             fields,
             issues,
             actions,
+        })
+    }
+
+    async fn sync_issue_status(
+        &self,
+        target: &StatusSyncTarget,
+        status_name: &str,
+    ) -> Result<ProvisionAction, ProvisionError> {
+        // No network: just record the sync as an Updated action on the item.
+        Ok(ProvisionAction {
+            target: ProvisionTarget::Issue,
+            name: format!("Status → {status_name}"),
+            node_id: target.item_node_id.clone(),
+            outcome: ProvisionOutcome::Updated,
         })
     }
 }
@@ -491,16 +580,20 @@ impl GitHubBoardProvisioner {
         ))
     }
 
-    /// The set of existing field names on a project (for idempotency).
-    async fn existing_field_names(
+    /// The existing fields on a project, as a name → (field id, single-select
+    /// options) map (for idempotency and for resolving an existing Status field's
+    /// option ids so a sync can target the right option, #267).
+    async fn existing_fields(
         &self,
         project_id: &str,
-    ) -> Result<std::collections::HashSet<String>, ProvisionError> {
+    ) -> Result<std::collections::HashMap<String, (String, Vec<ProvisionedOption>)>, ProvisionError>
+    {
         let data = self
             .graphql(
                 "query($id:ID!){ node(id:$id){ ... on ProjectV2 { \
                  fields(first:100){ nodes{ \
-                 ... on ProjectV2FieldCommon { name } } } } } }",
+                 ... on ProjectV2FieldCommon { id name } \
+                 ... on ProjectV2SingleSelectField { options{ id name } } } } } } }",
                 json!({ "id": project_id }),
             )
             .await?;
@@ -508,22 +601,29 @@ impl GitHubBoardProvisioner {
             .as_array()
             .cloned()
             .unwrap_or_default();
-        Ok(nodes
-            .into_iter()
-            .filter_map(|n| n["name"].as_str().map(str::to_string))
-            .collect())
+        let mut out = std::collections::HashMap::new();
+        for n in nodes {
+            let Some(name) = n["name"].as_str() else {
+                continue;
+            };
+            let id = n["id"].as_str().unwrap_or_default().to_string();
+            let options = parse_options(&n["options"]);
+            out.insert(name.to_string(), (id, options));
+        }
+        Ok(out)
     }
 
     /// Create one custom field. `data_type` maps the plan's lowercase types to the
     /// GraphQL `ProjectV2CustomFieldType` enum. Single-select options are passed
-    /// with a default colour + description (both required by the API).
+    /// with a default colour + description (both required by the API). Returns the
+    /// field id plus, for single-select fields, the created options' name→id map.
     async fn create_field(
         &self,
         project_id: &str,
         name: &str,
         data_type: &str,
         options: &[String],
-    ) -> Result<String, ProvisionError> {
+    ) -> Result<(String, Vec<ProvisionedOption>), ProvisionError> {
         let gql_type = match data_type {
             "single-select" => "SINGLE_SELECT",
             "number" => "NUMBER",
@@ -554,14 +654,15 @@ impl GitHubBoardProvisioner {
             .graphql(
                 "mutation($input:CreateProjectV2FieldInput!){ \
                  createProjectV2Field(input:$input){ \
-                 projectV2Field{ ... on ProjectV2FieldCommon { id } } } }",
+                 projectV2Field{ \
+                 ... on ProjectV2FieldCommon { id } \
+                 ... on ProjectV2SingleSelectField { options{ id name } } } } }",
                 json!({ "input": input }),
             )
             .await?;
-        Ok(data["createProjectV2Field"]["projectV2Field"]["id"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string())
+        let field = &data["createProjectV2Field"]["projectV2Field"];
+        let id = field["id"].as_str().unwrap_or_default().to_string();
+        Ok((id, parse_options(&field["options"])))
     }
 
     /// The set of existing draft-issue titles on a project (for idempotency).
@@ -646,25 +747,28 @@ impl BoardProvisioner for GitHubBoardProvisioner {
             outcome: project_outcome,
         });
 
-        // 3. Fields (query existing once, create the absent ones).
-        let have_fields = self.existing_field_names(&project_node_id).await?;
+        // 3. Fields (query existing once, create the absent ones). The query also
+        // returns each existing single-select field's option ids, so an existing
+        // Status field can still be synced to later (#267).
+        let have_fields = self.existing_fields(&project_node_id).await?;
         let mut fields = Vec::new();
         for f in &plan.fields {
-            if have_fields.contains(&f.name) {
+            if let Some((node_id, options)) = have_fields.get(&f.name) {
                 actions.push(ProvisionAction {
                     target: ProvisionTarget::Field,
                     name: f.name.clone(),
-                    node_id: String::new(),
+                    node_id: node_id.clone(),
                     outcome: ProvisionOutcome::Existing,
                 });
                 fields.push(ProvisionedField {
                     name: f.name.clone(),
-                    node_id: String::new(),
+                    node_id: node_id.clone(),
                     outcome: ProvisionOutcome::Existing,
+                    options: options.clone(),
                 });
                 continue;
             }
-            let node_id = self
+            let (node_id, options) = self
                 .create_field(&project_node_id, &f.name, &f.data_type, &f.options)
                 .await?;
             actions.push(ProvisionAction {
@@ -677,6 +781,7 @@ impl BoardProvisioner for GitHubBoardProvisioner {
                 name: f.name.clone(),
                 node_id,
                 outcome: ProvisionOutcome::Created,
+                options,
             });
         }
 
@@ -724,6 +829,52 @@ impl BoardProvisioner for GitHubBoardProvisioner {
             actions,
         })
     }
+
+    async fn sync_issue_status(
+        &self,
+        target: &StatusSyncTarget,
+        status_name: &str,
+    ) -> Result<ProvisionAction, ProvisionError> {
+        // Set the single-select value on the item: updateProjectV2ItemFieldValue
+        // takes { projectId, itemId, fieldId, value: { singleSelectOptionId } }.
+        self.graphql(
+            "mutation($projectId:ID!,$itemId:ID!,$fieldId:ID!,$optionId:String!){ \
+             updateProjectV2ItemFieldValue(input:{ \
+             projectId:$projectId,itemId:$itemId,fieldId:$fieldId, \
+             value:{ singleSelectOptionId:$optionId } }){ \
+             projectV2Item{ id } } }",
+            json!({
+                "projectId": target.project_node_id,
+                "itemId": target.item_node_id,
+                "fieldId": target.field_node_id,
+                "optionId": target.option_node_id,
+            }),
+        )
+        .await?;
+        Ok(ProvisionAction {
+            target: ProvisionTarget::Issue,
+            name: format!("Status → {status_name}"),
+            node_id: target.item_node_id.clone(),
+            outcome: ProvisionOutcome::Updated,
+        })
+    }
+}
+
+/// Parse a GraphQL `options { id name }` array into the option name→id map.
+fn parse_options(value: &serde_json::Value) -> Vec<ProvisionedOption> {
+    value
+        .as_array()
+        .map(|opts| {
+            opts.iter()
+                .filter_map(|o| {
+                    Some(ProvisionedOption {
+                        name: o["name"].as_str()?.to_string(),
+                        node_id: o["id"].as_str().unwrap_or_default().to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -739,7 +890,7 @@ mod tests {
                 BoardField {
                     name: "Status".into(),
                     data_type: "single-select".into(),
-                    options: vec!["Not started".into(), "Draft".into()],
+                    options: vec!["Not started".into(), "Draft".into(), "In review".into()],
                 },
                 BoardField {
                     name: "Forecast minutes".into(),
@@ -879,6 +1030,75 @@ mod tests {
         let body = issue_body(&["First".into(), "Second".into()]);
         assert!(body.contains("- [ ] First"));
         assert!(body.contains("- [ ] Second"));
+    }
+
+    /// The mock captures Status option ids so a status sync can resolve them
+    /// offline, and `status_sync_target` returns the matching item/field/option.
+    #[tokio::test]
+    async fn mock_captures_status_options_and_resolves_a_sync_target() {
+        let plan = sample_plan();
+        let result = MockBoardProvisioner::new()
+            .provision(&plan, "contoso")
+            .await
+            .unwrap();
+
+        // The Status field carries an option id per plan option.
+        let status = result.fields.iter().find(|f| f.name == "Status").unwrap();
+        assert_eq!(status.options.len(), 3);
+        assert!(status.options.iter().any(|o| o.name == "In review"));
+
+        // Resolve a target for an existing issue + a real status name.
+        let target = result
+            .status_sync_target("Migrate A · CI", "In review")
+            .expect("a sync target");
+        assert_eq!(target.project_node_id, result.project_node_id);
+        assert_eq!(target.item_node_id, result.issues[0].node_id);
+        assert_eq!(target.field_node_id, status.node_id);
+        assert_eq!(
+            target.option_node_id,
+            status
+                .options
+                .iter()
+                .find(|o| o.name == "In review")
+                .unwrap()
+                .node_id
+        );
+    }
+
+    /// No matching issue / unknown status option => None (a clean no-op upstream).
+    #[tokio::test]
+    async fn status_sync_target_is_none_when_unresolvable() {
+        let plan = sample_plan();
+        let result = MockBoardProvisioner::new()
+            .provision(&plan, "contoso")
+            .await
+            .unwrap();
+        assert!(result
+            .status_sync_target("No such issue", "In review")
+            .is_none());
+        assert!(result
+            .status_sync_target("Migrate A · CI", "No such status")
+            .is_none());
+    }
+
+    /// The mock sync records an `Updated` action on the item without any network.
+    #[tokio::test]
+    async fn mock_sync_issue_status_records_an_updated_action() {
+        let plan = sample_plan();
+        let provisioner = MockBoardProvisioner::new();
+        let result = provisioner.provision(&plan, "contoso").await.unwrap();
+        let target = result
+            .status_sync_target("Migrate A · CI", "In review")
+            .unwrap();
+
+        let action = provisioner
+            .sync_issue_status(&target, "In review")
+            .await
+            .unwrap();
+        assert_eq!(action.outcome, ProvisionOutcome::Updated);
+        assert_eq!(action.target, ProvisionTarget::Issue);
+        assert_eq!(action.node_id, result.issues[0].node_id);
+        assert!(action.name.contains("In review"));
     }
 
     /// Live smoke test — provisions a REAL board in `BIFROST_GH_ORG`. Ignored by
