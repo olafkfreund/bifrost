@@ -74,6 +74,7 @@ the posture requires.
 | Live conversion | `BIFROST_CONVERT_LIVE` | unset (mock) | Uses the real Importer Docker + configured LLM, not the mock |
 | Live commit | `BIFROST_COMMIT_LIVE` | unset (mock PR) | Opens a real GitHub pull request on commit |
 | Live validation | `BIFROST_VALIDATE_LIVE` | unset (mock) | Triggers a real sandbox `workflow_dispatch` run |
+| Live program board | `BIFROST_BOARD_LIVE` | unset (mock) | Provisions a real repo + org Project + fields + issues via GraphQL (admin-only `POST /api/program-board/provision`); needs a GitHub App / PAT with project scope |
 | Editor commit | `BIFROST_MCP_COMMIT` | unset (off) | Allows the MCP `bifrost_commit` tool to open PRs |
 | Attestation signing | `BIFROST_SIGNING_KEY` | dev key | **Set in production** — HMAC key for signed attestation export |
 | Target repo | `BIFROST_GH_REPO` / `BIFROST_GH_BASE` | `example/sandbox` / `main` | Where converted workflows are committed |

@@ -32,9 +32,10 @@ use axum::{
 };
 use bifrost_adapters::{
     convert_pipeline, declared_outputs, github_token_from_env, AzureDevOpsBaseline,
-    BaselineRequest, BaselineSource, CommitRequest, ConversionOutcome, GitHubPublisher,
-    GitHubRunCollector, GitHubSandboxTrigger, MockBaselineSource, MockImporter, MockPublisher,
-    MockRunCollector, MockSandboxTrigger, Publisher, RunCollector, RunQuery, SandboxTrigger,
+    BaselineRequest, BaselineSource, BoardProvisioner, CommitRequest, ConversionOutcome,
+    GitHubBoardProvisioner, GitHubPublisher, GitHubRunCollector, GitHubSandboxTrigger,
+    MockBaselineSource, MockBoardProvisioner, MockImporter, MockPublisher, MockRunCollector,
+    MockSandboxTrigger, ProvisionAction, Publisher, RunCollector, RunQuery, SandboxTrigger,
     TriggerRequest,
 };
 use bifrost_core::{
@@ -76,6 +77,11 @@ struct AppState {
     /// `BIFROST_AIR_GAP_LOCK=1`: forces air-gap on and refuses to disable it via the
     /// API — for deployments where the UI must never relax the guarantee.
     air_gap_locked: bool,
+    /// Append-only provisioning record (#266): every program-board provisioning
+    /// action (repo/project/field/issue, created-or-existing) is appended here as
+    /// the attestation trail. Handlers only ever extend it — never mutate or
+    /// remove entries — so it stays immutable like the per-proposal audit log.
+    provisioning_log: RwLock<Vec<ProvisionAction>>,
 }
 
 impl AppState {
@@ -559,6 +565,20 @@ async fn select_publisher() -> Box<dyn Publisher> {
         return Box::new(p);
     }
     Box::new(MockPublisher)
+}
+
+/// The provisioner for the program-board path (#266): the real GraphQL one when
+/// the live board path is explicitly enabled and authenticated, else the offline
+/// mock (never a silent create of org infrastructure).
+async fn select_board_provisioner() -> Box<dyn BoardProvisioner> {
+    if let Some(token) = github_token("BIFROST_BOARD_LIVE").await {
+        let mut p = GitHubBoardProvisioner::new(token);
+        if let Ok(base) = std::env::var("GITHUB_API_BASE") {
+            p = p.with_api_base(base);
+        }
+        return Box::new(p);
+    }
+    Box::new(MockBoardProvisioner::new())
 }
 
 /// Commit an approved proposal's workflow and open a PR (#56). The proposal must
@@ -1201,6 +1221,40 @@ async fn program_board_plan_handler(
 ) -> Json<bifrost_core::ProgramBoardPlan> {
     let portfolio = state.portfolio.read().await.clone();
     Json(bifrost_core::program_board_plan(&portfolio))
+}
+
+/// `POST /api/program-board/provision` (#266) — execute the dry-run plan: create
+/// (idempotently) the dedicated repo + org Project + custom fields + one draft
+/// issue per pipeline via the GitHub GraphQL API. **Admin-only** (provisioning org
+/// infrastructure is an admin write) and **opt-in**: the real GraphQL provisioner
+/// runs only when `BIFROST_BOARD_LIVE` is enabled *and* GitHub auth is present;
+/// otherwise the offline mock runs and nothing is written. Every provisioning
+/// action is appended to the immutable provisioning record (the attestation
+/// trail) and returned in the result. No secret values are sent or recorded.
+async fn program_board_provision_handler(
+    State(state): State<Shared>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let portfolio = state.portfolio.read().await.clone();
+    let owner = portfolio.summary.org.clone();
+    // Consume the deterministic Phase 1 plan; we never recompute it here.
+    let plan = bifrost_core::program_board_plan(&portfolio);
+
+    let result = select_board_provisioner()
+        .await
+        .provision(&plan, &owner)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+
+    // Append every action to the immutable provisioning record (attestation).
+    {
+        let mut log = state.provisioning_log.write().await;
+        log.extend(result.actions.iter().cloned());
+    }
+
+    Ok(Json(json!({
+        "result": result,
+        "provisioningLog": *state.provisioning_log.read().await,
+    })))
 }
 
 async fn completeness_handler(
@@ -2076,6 +2130,10 @@ fn app(state: Shared) -> Router {
         .route("/api/program", get(program_handler))
         .route("/api/gei", get(gei_handler))
         .route("/api/program-board/plan", get(program_board_plan_handler))
+        .route(
+            "/api/program-board/provision",
+            post(program_board_provision_handler),
+        )
         .route("/api/completeness", get(completeness_handler))
         .route("/api/chat", post(chat_handler))
         .route(
@@ -2117,6 +2175,11 @@ fn required_role(method: &axum::http::Method, path: &str) -> Role {
     // The org-wide compliance export and all connection/config management are
     // admin-only (sensitive, even to read).
     if path == "/api/audit-pack" || path.starts_with("/api/connections") || path == "/api/routing" {
+        return Role::Admin;
+    }
+    // Provisioning the program board creates org-level infrastructure (a repo + an
+    // org Project) — an admin write (#266). The dry-run plan (a GET) stays open.
+    if path == "/api/program-board/provision" {
         return Role::Admin;
     }
     // Changing the air-gap posture is an admin action; reading settings is open.
@@ -2307,6 +2370,7 @@ async fn main() -> anyhow::Result<()> {
         metrics: metrics::Metrics::new(),
         air_gap: AtomicBool::new(air_gap_default || air_gap_locked),
         air_gap_locked,
+        provisioning_log: RwLock::new(Vec::new()),
     });
 
     let addr = std::env::var("BIFROST_API_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
@@ -2346,6 +2410,7 @@ mod tests {
             metrics: metrics::Metrics::new(),
             air_gap: AtomicBool::new(false),
             air_gap_locked: false,
+            provisioning_log: RwLock::new(Vec::new()),
         })
     }
 
@@ -2696,6 +2761,48 @@ mod tests {
         );
         // The org-wide compliance export is admin-only.
         assert_eq!(required_role(&Method::GET, "/api/audit-pack"), Role::Admin);
+        // The program-board dry-run plan is a read (Viewer); provisioning it
+        // creates org infrastructure and is admin-only (#266).
+        assert_eq!(
+            required_role(&Method::GET, "/api/program-board/plan"),
+            Role::Viewer
+        );
+        assert_eq!(
+            required_role(&Method::POST, "/api/program-board/provision"),
+            Role::Admin
+        );
+    }
+
+    #[tokio::test]
+    async fn program_board_provision_uses_the_mock_offline_and_records_the_attestation_trail() {
+        let state = test_state();
+        // No BIFROST_BOARD_LIVE / auth → the offline mock runs, nothing is written.
+        let res = program_board_provision_handler(State(state.clone()))
+            .await
+            .unwrap()
+            .0;
+
+        // The result carries node ids/URLs and an action log.
+        assert!(!res["result"]["projectNodeId"].as_str().unwrap().is_empty());
+        let actions = res["result"]["actions"].as_array().unwrap();
+        assert!(!actions.is_empty());
+        // First run offline: everything is created.
+        assert!(actions
+            .iter()
+            .all(|a| a["outcome"].as_str() == Some("created")));
+
+        // Every action was appended to the immutable provisioning record.
+        let logged = res["provisioningLog"].as_array().unwrap().len();
+        assert_eq!(logged, actions.len());
+
+        // A second provision appends again (the record only grows) — the trail is
+        // append-only, mirroring the per-proposal audit log.
+        let res2 = program_board_provision_handler(State(state.clone()))
+            .await
+            .unwrap()
+            .0;
+        let logged2 = res2["provisioningLog"].as_array().unwrap().len();
+        assert_eq!(logged2, logged * 2);
     }
 
     #[test]
@@ -2746,6 +2853,7 @@ mod tests {
             metrics: metrics::Metrics::new(),
             air_gap: AtomicBool::new(false),
             air_gap_locked: false,
+            provisioning_log: RwLock::new(Vec::new()),
         })
     }
 
@@ -2762,6 +2870,7 @@ mod tests {
             metrics: metrics::Metrics::new(),
             air_gap: AtomicBool::new(true),
             air_gap_locked: true,
+            provisioning_log: RwLock::new(Vec::new()),
         })
     }
 
