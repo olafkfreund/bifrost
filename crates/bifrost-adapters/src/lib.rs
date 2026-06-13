@@ -9,6 +9,7 @@ pub mod azure_devops;
 pub mod bamboo;
 pub mod baseline;
 pub mod bitbucket;
+pub mod board;
 pub mod circleci;
 pub mod convert;
 pub mod docker_importer;
@@ -34,6 +35,11 @@ pub use baseline::{
     AzureDevOpsBaseline, BaselineError, BaselineRequest, BaselineSource, MockBaselineSource,
 };
 pub use bitbucket::BitbucketAdapter;
+pub use board::{
+    BoardProvisioner, GitHubBoardProvisioner, MockBoardProvisioner, ProvisionAction,
+    ProvisionError, ProvisionOutcome, ProvisionResult, ProvisionTarget, ProvisionedField,
+    ProvisionedIssue,
+};
 pub use circleci::CircleCiAdapter;
 pub use convert::{convert_pipeline, ConversionError, ConversionOutcome};
 pub use docker_importer::DockerImporter;
